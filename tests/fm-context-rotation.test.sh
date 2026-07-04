@@ -263,6 +263,48 @@ test_watcher_rotation_due_on_turn_boundary() {
   pass "watcher surfaces rotation-due at a high-context turn boundary"
 }
 
+test_watcher_rotation_due_while_afk_on_turn_boundary() {
+  local dir state fakebin out drain_out capture pid
+  dir=$(make_case rotation-afk-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  printf 'idle\nFable 5 │ fusor ████████░░ 89%%\n' > "$capture"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship" "harness=claude"
+  : > "$state/task.turn-ended"
+  date '+%s' > "$state/.afk"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle'
+  watch_case_bg "$state" "$fakebin" "$out" "$capture"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "afk watcher did not exit for a high-context turn boundary"
+  grep -Fx "rotation-due: task 89%" "$out" >/dev/null || fail "afk watcher did not print rotation-due reason: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after afk rotation-due failed"
+  grep "$(printf '\trotation-due\t')" "$drain_out" | grep -F "rotation-due: task 89%" >/dev/null || fail "afk rotation-due wake was not queued"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/task.turn-ended" >/dev/null || fail "afk turn-ended signal was not preserved with rotation"
+  pass "watcher surfaces rotation-due during afk at a high-context turn boundary"
+}
+
+test_watcher_rotation_due_while_afk_on_stale_boundary() {
+  local dir state fakebin out drain_out capture window key pane_hash sig pid
+  dir=$(make_case rotation-afk-stale); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  window="test:fm-task"
+  printf 'idle\nFable 5 │ fusor ████████░░ 89%%\n' > "$capture"
+  fm_write_meta "$state/task.meta" "window=$window" "kind=ship" "harness=claude"
+  printf 'working: last routine note\n' > "$state/task.status"
+  sig=$(seen_sig "$state/task.status"); printf '%s' "$sig" > "$state/.seen-task_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "$(cat "$capture")")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  date '+%s' > "$state/.afk"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle'
+  watch_case_bg "$state" "$fakebin" "$out" "$capture"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "afk watcher did not exit for a high-context stale boundary"
+  grep -Fx "rotation-due: task 89%" "$out" >/dev/null || fail "afk stale watcher did not print rotation-due reason: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after afk stale rotation-due failed"
+  grep "$(printf '\trotation-due\t')" "$drain_out" | grep -F "rotation-due: task 89%" >/dev/null || fail "afk stale rotation-due wake was not queued"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "stale: $window" >/dev/null || fail "afk stale wake was not preserved with rotation"
+  pass "watcher surfaces rotation-due during afk at a high-context stale boundary"
+}
+
 test_watcher_rotation_preserves_sibling_signal() {
   local dir state fakebin out drain_out capture pid
   dir=$(make_case rotation-sibling-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
@@ -798,6 +840,8 @@ test_current_claude_busy_spinner_fixture
 test_crew_state_includes_context_when_available
 test_crew_state_detects_current_claude_busy_spinner
 test_watcher_rotation_due_on_turn_boundary
+test_watcher_rotation_due_while_afk_on_turn_boundary
+test_watcher_rotation_due_while_afk_on_stale_boundary
 test_watcher_rotation_preserves_sibling_signal
 test_watcher_rotation_never_mid_turn
 test_watcher_rotation_suppresses_same_signature

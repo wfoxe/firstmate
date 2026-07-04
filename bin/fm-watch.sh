@@ -132,7 +132,8 @@ BUSY_REGEX=${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
-# wake) and never double-triages - and never runs the costly provably-working read.
+# wake) and never double-triages ordinary wakes. Rotation-due is still checked at
+# turn boundaries before the daemon receives the batched wake.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
@@ -460,7 +461,7 @@ EOF
     if signal_reason_is_actionable $files; then
       signal_actionable=true
     fi
-    if ! afk_present && [ "$signal_actionable" != true ]; then
+    if [ "$signal_actionable" != true ]; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         base=${f##*/}
@@ -587,6 +588,19 @@ EOF
         if afk_present; then
           # Daemon owns triage: one-shot per distinct stale hash, as before.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
+            task=$(window_to_task "$w" "$STATE")
+            rotation_sig="stale:$h"
+            rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+            if [ -n "$rotation_reason" ] && ! crew_is_provably_working "$task"; then
+              rotation_pct=${rotation_reason##* }
+              rotation_pct=${rotation_pct%%%}
+              fm_wake_append stale "$w" "stale: $w" || exit 1
+              fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              mark_rotation_seen "$task" "$rotation_pct" "$rotation_sig"
+              wake "$rotation_reason"
+            fi
             fm_wake_append stale "$w" "stale: $w" || exit 1
             printf '%s' "$h" > "$sf"
             wake "stale: $w"
