@@ -93,7 +93,7 @@ state/               volatile runtime signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
   <id>.turn-ended    touched by turn-end hooks
   <id>.grok-turnend-token   firstmate-owned grok hook registry token for the task; removed by teardown
-  <id>.meta          written by fm-spawn: window=, worktree=, project=, harness=, model=, effort=, kind=, mode=, yolo=, tasktmp=; kind=secondmate also records home= and projects=; a task on a non-default spawn-capable runtime backend also records backend= (absent means tmux, the verified reference backend; herdr records herdr_session=, herdr_workspace_id=, herdr_tab_id=, herdr_pane_id= (docs/herdr-backend.md), zellij records zellij_session=, zellij_tab_id=, zellij_pane_id= (docs/zellij-backend.md), and orca records orca_worktree_id= plus terminal= while keeping window=fm-<id> as the firstmate alias (docs/orca-backend.md); bin/fm-backend.sh, section 8) (fm-pr-check, including through fm-pr-merge, appends pr= and GitHub's pr_head= when available; fm-x-link appends x_request=, x_request_ts=, and x_followups= for an X-mention-originated task, section 14)
+  <id>.meta          written by fm-spawn: window=, worktree=, project=, harness=, model=, effort=, kind=, mode=, yolo=, tasktmp=; kind=secondmate also records home= and projects=; a task on a non-default spawn-capable runtime backend also records backend= (absent means tmux, the verified reference backend; herdr records herdr_session=, herdr_workspace_id=, herdr_tab_id=, herdr_pane_id= (docs/herdr-backend.md), zellij records zellij_session=, zellij_tab_id=, zellij_pane_id= (docs/zellij-backend.md), and orca records orca_worktree_id= plus terminal= while keeping window=fm-<id> as the firstmate alias (docs/orca-backend.md); bin/fm-backend.sh, section 8) (fm-pr-check, including through fm-pr-merge, appends pr= and GitHub's pr_head= when available; fm-x-link appends x_request=, x_request_ts=, and x_followups= for an X-mention-originated task, section 14; fm-rotate appends rotation_handoff= and rotation_at= after a successful soft rotation)
   <id>.check.sh      optional slow poll you write per task (e.g. merged-PR check)
   x-watch.check.sh   generated X-mode relay poll shim; present only when opted in (section 14)
   x-inbox/           generated X-mode pending mention payloads; fmx-respond drains it (section 14)
@@ -102,7 +102,7 @@ state/               volatile runtime signals; gitignored
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
-  .hash-* .count-* .stale-* .stale-since-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
+  .hash-* .count-* .stale-* .stale-since-* .seen-* .rotation-seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); fm-guard.sh reads it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch

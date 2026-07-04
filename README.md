@@ -46,6 +46,7 @@ This is.. a directory that turns any agent into your firstmate, and you the capt
 - **Explicit project modes** - each project ships via `no-mistakes`, `direct-PR`, or `local-only`, with an optional `+yolo` autonomy flag.
 - **Optional secondmates** - opt in to persistent domain supervisors that run from isolated firstmate homes with their own `FM_HOME`, state, projects, and session lock, kept on the primary firstmate version by guarded local fast-forwards.
 - **Event-driven, zero-token supervision** - a bash watcher sleeps on the fleet and wakes the first mate only when something needs you.
+- **Soft context rotation** - high-context crew sessions stow a committed handoff and restart only at turn boundaries; firstmate itself can be run under `bin/fm-run.sh` so `/stow` plus exit relaunches fresh.
 - **Optional X mode** - opt in with one local `.env` token so firstmate can answer your public `@myfirstmate` mentions, act on normal reversible mention requests through the same lifecycle as chat requests, acknowledge spawned work, and post up to three public-safe completion follow-ups within seven days for genuine milestones and the final outcome without changing non-X behavior; dry-run preview records would-be replies and dismissals locally before go-live.
 - **Guarded by construction** - the first mate is read-only over your projects outside guarded clone refreshes, safe branch pruning, and approved `local-only` fast-forward merges; crewmates make every project change behind your merge approval.
 - **Restart-proof** - all state lives on disk and in the active session backend (tmux by hard default, herdr when selected or auto-detected, zellij/orca when explicitly selected); kill the session anytime and the next one reconciles and carries on.
@@ -60,7 +61,7 @@ The first mate detects and offers to install everything else.
 ```sh
 gh auth login
 git clone https://github.com/kunchenguid/firstmate
-cd firstmate && claude   # launch your harness here; AGENTS.md takes over
+cd firstmate && bin/fm-run.sh --harness claude   # launch with restart support; AGENTS.md takes over
 ```
 
 Then just talk:
@@ -110,7 +111,7 @@ You chat with the first mate.
 It routes each request to a crewmate in its own session endpoint and git worktree, supervises the fleet with a zero-token event-driven watcher, and brings you finished PRs, approved local merges, or investigation reports.
 Optional secondmates extend this to persistent domain supervisors, dispatch profiles let you steer which harness handles which task, and an opt-in X mode lets the same fleet answer public mentions.
 
-Full architecture - the supervision engine, worktree isolation, secondmates, dispatch profiles, project modes, optional X mode, fleet sync, and self-update - is in [docs/architecture.md](docs/architecture.md).
+Full architecture - the supervision engine, worktree isolation, secondmates, dispatch profiles, project modes, optional X mode, context rotation, fleet sync, and self-update - is in [docs/architecture.md](docs/architecture.md).
 
 ## Built-in skills
 
@@ -138,6 +139,7 @@ Firstmate's skills live in two separate places with different audiences:
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - how the crew, supervision, worktrees, secondmates, and project modes work.
+- [docs/context-rotation.md](docs/context-rotation.md) - soft context rotation for crews and firstmate self-rotation.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
 - [docs/tmux-backend.md](docs/tmux-backend.md) - setup guide for the tmux reference backend: prerequisites, attaching, and watching crew windows.
 - [docs/herdr-backend.md](docs/herdr-backend.md) - setup guide for the experimental herdr backend, plus its verification notes and known gaps.
