@@ -70,13 +70,15 @@ Everything this skill files goes to a local file by default; it only ever reache
    - **Staleness:** more than 7 days since the last hygiene pass for the current-directory fallback.
      Track that with `.stow-last-hygiene` in the current directory, written as an ISO date (`YYYY-MM-DD`) after a pass.
      If the timestamp is absent and `.stow-notes.md` exists, treat it as stale once so the fallback gets a baseline pass.
-     If this skill creates or updates that timestamp in a git worktree, protect it the same way as `.stow-notes.md`: add a `.stow-last-hygiene` line to the current-directory `.gitignore` when possible, and report if the ignore write failed.
+     Before writing it in a git worktree, verify that `.stow-last-hygiene` is not already tracked in the index.
+     If it is tracked, do not create or update it as private metadata, do not rely on `.gitignore` to protect it, and report the hygiene timestamp write as blocked until the user chooses a safe destination or confirms the tracked file is acceptable.
+     After the tracked-file check passes, protect it the same way as `.stow-notes.md`: add a `.stow-last-hygiene` line to the current-directory `.gitignore` when possible, and report if the ignore write failed.
      If `.stow-notes.md` does not exist and no current-directory fallback was used, skip this timestamp entirely.
    - **Explicit request:** `/stow prune`, "prune memory", or an equivalent user request forces a pass over the relevant local stow destinations.
 
    When no trigger fires, do not reread or rewrite everything.
    Print one short status line such as `local stow notes within budget, last pruned 2026-07-04` and skip the phase.
-   When a trigger fires, run the checklist below and write today's ISO date to `.stow-last-hygiene` if the current-directory fallback is part of the pass.
+   When a trigger fires, run the checklist below and write today's ISO date to `.stow-last-hygiene` after the tracked-file check passes, if the current-directory fallback is part of the pass.
 
    Prune checklist:
    - Delete entries that are superseded, disproven, or expired; keep dates on what survives when dates are already part of the convention.
@@ -97,13 +99,14 @@ Everything this skill files goes to a local file by default; it only ever reache
    If anything landed in the `.stow-notes.md` private fallback, say so explicitly - note that it is private and confined to this project, and that it can be promoted into a shared, tracked file later if the user wants it more widely visible.
    In a git repo, report the ignore protection according to what actually happened: if the `.gitignore` write succeeded, say that a `.stow-notes.md` line was added to a current-directory `.gitignore` to keep it out of git, awaiting the user's own commit; if the `.gitignore` write failed, say that `.stow-notes.md` was still written but the user must ignore it manually before relying on git to hide it from status or commits.
    If the tier-3 fallback was blocked because `.stow-notes.md` was already tracked, say that no private fallback was written and that the session is not fully safe to reset until the user chooses another destination or confirms that tracked file is acceptable.
+   If the hygiene timestamp write was blocked because `.stow-last-hygiene` was already tracked, say that no private timestamp was written and that timestamp-based hygiene remains blocked until the user chooses another destination or confirms that tracked file is acceptable.
    If a user preference specifically landed there because no user-level memory file was discovered, add the one extra caveat: it now applies to this project only; this skill's own tier-3 default never writes outside the current directory, so if the user wants that preference to follow them across every project, they need to copy it into their own global/user-level memory file themselves.
    The real payoff of stowing is not this session, it's the next one: close with a short, copy-pasteable RESUME POINTER naming exactly which files a fresh session should load to pick this back up cold, e.g. `To pick this back up in a new session, load: CLAUDE.md (project conventions), .stow-notes.md (private notes, not shared)`.
    List only the files this sweep actually wrote or updated; skip the pointer if nothing was written.
 
 ## What this skill does not do
 
-It does not invent a new note-taking system, initialize version control, or commit/push anything on the user's behalf beyond editing a file the discovered convention already made writable, creating the `.stow-notes.md` fallback from step 3 and its `.stow-last-hygiene` timestamp plus their lines in a current-directory `.gitignore`, or using a destination the user explicitly approved.
+It does not invent a new note-taking system, initialize version control, or commit/push anything on the user's behalf beyond editing a file the discovered convention already made writable, creating the `.stow-notes.md` fallback from step 3 and its untracked `.stow-last-hygiene` timestamp plus their lines in a current-directory `.gitignore`, or using a destination the user explicitly approved.
 It never stages or commits those `.gitignore` lines itself - the edit lands in the working tree only, for the user to review and commit like any other change.
 Its own tier-3 default never writes durable findings outside the current working directory, and its optional `.gitignore` metadata edits are also confined to that directory.
 Among local durable-finding writes, tier 2 is the only exception, and only because it targets a destination the user's own existing convention already established, never one this skill invents.
