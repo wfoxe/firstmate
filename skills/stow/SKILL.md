@@ -1,6 +1,6 @@
 ---
 name: stow
-description: Sweep the current conversation for durable knowledge - user preferences, project facts, operational gotchas, and unfinished next steps - and file each through explicit instructions, existing local conventions, or the private `.stow-notes.md` fallback, so nothing is lost when the session ends. Use when the user invokes /stow, asks to save or write down what was learned this session, or before a context reset or long break.
+description: Sweep the current conversation for durable knowledge - user preferences, project facts, operational gotchas, and unfinished next steps - then file each through explicit instructions, existing local conventions, or the private `.stow-notes.md` fallback, and occasionally prune/compress local notes so they stay lean. Use when the user invokes /stow, asks to save or write down what was learned this session, asks to prune stowed memory, or before a context reset or long break.
 user-invocable: true
 ---
 
@@ -58,11 +58,41 @@ Everything this skill files goes to a local file by default; it only ever reache
    Do not invent new shared files, new folders, or new tracker categories the project doesn't already have, and do not pick an ad hoc filename or location for the fallback - `.stow-notes.md` in the current directory is the one prescribed default.
    If even that fallback is unwritable and the user doesn't want to establish a new convention, say so plainly and leave that finding unfiled rather than fabricate a destination for it.
 
-6. **Curate, don't just append.**
+6. **Run lightweight note hygiene when the gate says to.**
+   This keeps local stow destinations from accumulating stale prose over long use, while ordinary `/stow` runs stay cheap.
+   Because this public skill has no fixed firstmate home and must stay sandbox-safe, the phase is limited to local files this skill just wrote or selected as destinations, especially `.stow-notes.md`.
+   Do not scan unrelated files looking for something to prune.
+
+   Full hygiene runs only when at least one trigger fires:
+   - **Size budget exceeded:** a local stow destination is over its budget.
+     Use 60 lines for `.stow-notes.md`.
+     For an existing project or user memory file, use its documented local budget if one exists; otherwise treat "obviously sprawling and repetitive" as a judgment trigger instead of imposing a universal budget on someone else's convention.
+   - **Staleness:** more than 7 days since the last hygiene pass for the current-directory fallback.
+     Track that with `.stow-last-hygiene` in the current directory, written as an ISO date (`YYYY-MM-DD`) after a pass.
+     If the timestamp is absent and `.stow-notes.md` exists, treat it as stale once so the fallback gets a baseline pass.
+     If this skill creates or updates that timestamp in a git worktree, protect it the same way as `.stow-notes.md`: add a `.stow-last-hygiene` line to the current-directory `.gitignore` when possible, and report if the ignore write failed.
+     If `.stow-notes.md` does not exist and no current-directory fallback was used, skip this timestamp entirely.
+   - **Explicit request:** `/stow prune`, "prune memory", or an equivalent user request forces a pass over the relevant local stow destinations.
+
+   When no trigger fires, do not reread or rewrite everything.
+   Print one short status line such as `local stow notes within budget, last pruned 2026-07-04` and skip the phase.
+   When a trigger fires, run the checklist below and write today's ISO date to `.stow-last-hygiene` if the current-directory fallback is part of the pass.
+
+   Prune checklist:
+   - Delete entries that are superseded, disproven, or expired; keep dates on what survives when dates are already part of the convention.
+   - Consolidate clusters: several entries about one topic should become one rewritten durable entry.
+   - Re-route misfiled knowledge to the most specific existing local convention from step 3; never move anything to an external system unless explicit instructions already allow that route.
+   - Tighten prose without losing load-bearing facts, active constraints, or the "why" behind preference and feedback entries.
+     When in doubt, consolidate rather than delete.
+   - Never prune away standing user instructions, safety tripwires, active access constraints, never-reenable rules, or anything the user marked important.
+     These may be compressed, but the operative instruction must survive.
+
+7. **Curate, don't just append.**
    When a finding overlaps or supersedes something already recorded, prefer editing or replacing the existing note over piling on a duplicate.
 
-7. **Finish with an honest safe-to-end verdict and a resume pointer for the next session.**
+8. **Finish with an honest safe-to-end verdict and a resume pointer for the next session.**
    Tell the user, in plain language, what was captured and where, what could not be captured (and why), and whether the conversation is now safe to end or reset - i.e. whether every durable finding from this sweep now lives on disk or in an explicitly requested tracker rather than only in this chat.
+   Include the one-line note-hygiene result: skipped within budget, pruned specific files, or unable to prune with the reason.
    If something could not be captured yet, say so explicitly instead of reporting the session fully safe.
    If anything landed in the `.stow-notes.md` private fallback, say so explicitly - note that it is private and confined to this project, and that it can be promoted into a shared, tracked file later if the user wants it more widely visible.
    In a git repo, report the ignore protection according to what actually happened: if the `.gitignore` write succeeded, say that a `.stow-notes.md` line was added to a current-directory `.gitignore` to keep it out of git, awaiting the user's own commit; if the `.gitignore` write failed, say that `.stow-notes.md` was still written but the user must ignore it manually before relying on git to hide it from status or commits.
@@ -73,9 +103,9 @@ Everything this skill files goes to a local file by default; it only ever reache
 
 ## What this skill does not do
 
-It does not invent a new note-taking system, initialize version control, or commit/push anything on the user's behalf beyond editing a file the discovered convention already made writable, creating the `.stow-notes.md` fallback from step 3 and its line in a current-directory `.gitignore`, or using a destination the user explicitly approved.
-It never stages or commits that `.gitignore` line itself - the edit lands in the working tree only, for the user to review and commit like any other change.
-Its own tier-3 default never writes durable findings outside the current working directory, and its optional `.gitignore` metadata edit is also confined to that directory.
+It does not invent a new note-taking system, initialize version control, or commit/push anything on the user's behalf beyond editing a file the discovered convention already made writable, creating the `.stow-notes.md` fallback from step 3 and its `.stow-last-hygiene` timestamp plus their lines in a current-directory `.gitignore`, or using a destination the user explicitly approved.
+It never stages or commits those `.gitignore` lines itself - the edit lands in the working tree only, for the user to review and commit like any other change.
+Its own tier-3 default never writes durable findings outside the current working directory, and its optional `.gitignore` metadata edits are also confined to that directory.
 Among local durable-finding writes, tier 2 is the only exception, and only because it targets a destination the user's own existing convention already established, never one this skill invents.
 It never files credentials, secrets, or other sensitive material - only knowledge that's safe to keep in plain text wherever it lands.
 It never files anything to an issue tracker, hosted board, or other external/public system on its own inference - that only ever happens on the user's explicit say-so, per the hard rule in step 3.

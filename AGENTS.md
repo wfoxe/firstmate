@@ -405,7 +405,7 @@ Route each piece of durable knowledge to its most specific home:
 | Investigation findings | scout reports at `data/<id>/report.md` |
 
 When the captain invokes `/stow`, load the `stow` skill.
-It sweeps the current session for uncaptured durable knowledge, routes findings with this table, files undone next steps to the backlog, and reports whether the session is safe to reset.
+It sweeps the current session for uncaptured durable knowledge, routes findings with this table, files undone next steps to the backlog, runs its gated hygiene pass for curated session-loaded memory, and reports whether the session is safe to reset.
 
 **Delivery mode (choose at add).** `<mode>` is how a finished change reaches `main`, picked per project when you add it and recorded in the registry line (`fm-project-mode.sh` parses it; `fm-spawn` records it into each task's meta):
 
