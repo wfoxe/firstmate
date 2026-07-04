@@ -250,6 +250,7 @@ effort_flag_for_harness() {
 
 write_pi_extension_if_needed() {
   [ "$HARNESS" = pi ] || return 0
+  [ "$KIND" != secondmate ] || return 0
   [ -f "$STATE/$ID.pi-ext.ts" ] && return 0
   TURNEND="$STATE/$ID.turn-ended"
   cat > "$STATE/$ID.pi-ext.ts" <<EOF
@@ -281,11 +282,24 @@ EOF
 }
 
 launch_template() {
+  local kind=${1:-ship}
   case "$HARNESS" in
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __PROMPT__)"' ;;
-    codex) printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __PROMPT__)"' ;;
+    codex)
+      if [ "$kind" = secondmate ]; then
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(cat __PROMPT__)"'
+      else
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __PROMPT__)"'
+      fi
+      ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(cat __PROMPT__)"' ;;
-    pi) printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __PROMPT__)"' ;;
+    pi)
+      if [ "$kind" = secondmate ]; then
+        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__"$(cat __PROMPT__)"'
+      else
+        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __PROMPT__)"'
+      fi
+      ;;
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __PROMPT__)"' ;;
     *) echo "error: no rotation launch template for harness '$HARNESS'" >&2; return 1 ;;
   esac
@@ -317,7 +331,7 @@ fm_backend_send_text_line "$BACKEND" "$TARGET" "export GOTMPDIR=$TASK_TMP/gotmp"
 sleep 0.2
 
 TURNEND="$STATE/$ID.turn-ended"
-LAUNCH=$(launch_template)
+LAUNCH=$(launch_template "$KIND")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}

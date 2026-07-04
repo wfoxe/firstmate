@@ -399,6 +399,49 @@ test_rotate_relaunches_same_worktree_with_committed_handoff() {
   pass "fm-rotate exits and relaunches in the same worktree after a committed handoff"
 }
 
+test_rotate_secondmate_codex_omits_parent_turnend_notify() {
+  local dir state data wt fakebin sent cap out launch
+  dir="$TMP_ROOT/rotate-secondmate-codex"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=codex" "kind=secondmate" "mode=secondmate" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  assert_contains "$out" "rotated task" "secondmate codex rotate did not report success"
+  launch=$(grep -F "codex " "$sent" | tail -n 1)
+  assert_contains "$launch" "FM_HOME='$wt' codex" "secondmate codex rotate did not relaunch inside the secondmate home"
+  assert_not_contains "$launch" "notify=" "secondmate codex rotate must not install the parent turn-end notify hook"
+  pass "fm-rotate preserves the secondmate Codex launch template"
+}
+
+test_rotate_secondmate_pi_omits_parent_turnend_extension() {
+  local dir state data wt fakebin sent cap out launch
+  dir="$TMP_ROOT/rotate-secondmate-pi"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=pi" "kind=secondmate" "mode=secondmate" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  assert_contains "$out" "rotated task" "secondmate pi rotate did not report success"
+  launch=$(grep -F " pi " "$sent" | tail -n 1)
+  assert_contains "$launch" "FM_HOME='$wt' pi" "secondmate pi rotate did not relaunch inside the secondmate home"
+  assert_not_contains "$launch" " -e " "secondmate pi rotate must not install the parent turn-end extension"
+  [ ! -e "$state/task.pi-ext.ts" ] || fail "secondmate pi rotate wrote an unused parent turn-end extension"
+  pass "fm-rotate preserves the secondmate Pi launch template"
+}
+
 test_claude_context_parser_fixture
 test_crew_state_includes_context_when_available
 test_watcher_rotation_due_on_turn_boundary
@@ -413,3 +456,5 @@ test_rotate_refuses_grok_orca_before_exit
 test_rotate_refuses_unconfirmed_exit_submit
 test_rotate_waits_for_handoff_then_relaunches
 test_rotate_relaunches_same_worktree_with_committed_handoff
+test_rotate_secondmate_codex_omits_parent_turnend_notify
+test_rotate_secondmate_pi_omits_parent_turnend_extension
