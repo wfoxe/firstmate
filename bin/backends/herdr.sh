@@ -550,7 +550,7 @@ fm_backend_herdr_send_literal() {  # <target> <text>
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
-# Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
+# Escape, C-c, Ctrl-U clear-line, and Grok's C-q exit chord) onto
 # herdr's `pane send-keys` names. Verified empirically: enter, escape/esc, and
 # both ctrl+c/C-c all work (case-insensitive on herdr's side, but normalize
 # explicitly rather than relying on that).
@@ -559,6 +559,8 @@ fm_backend_herdr_normalize_key() {  # <key>
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+C) printf 'ctrl+c' ;;
+    C-u|c-u|ctrl+u|Ctrl+U) printf 'ctrl+u' ;;
+    C-q|c-q|ctrl+q|Ctrl+Q) printf 'ctrl+q' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -650,10 +652,13 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   case "$stripped" in
     '❯'|'>'|'$'|'%'|'#') printf 'empty'; return 0 ;;
   esac
-  # Strip a leading prompt glyph before judging what remains.
+  # Strip a leading prompt glyph before judging what remains. Literal-string
+  # removal only: under a C locale `?` matches single BYTES, so a `?`-count
+  # strip would tear the multibyte ❯ and leave a garbage byte behind. The
+  # whitespace trim below absorbs the space that follows the glyph.
   case "$stripped" in
-    '❯ '*|'> '*|'$ '*|'% '*|'# '*) stripped=${stripped#??} ;;
-    '❯'*|'>'*|'$'*|'%'*|'#'*) stripped=${stripped#?} ;;
+    '❯'*) stripped=${stripped#'❯'} ;;
+    '>'*|'$'*|'%'*|'#'*) stripped=${stripped#?} ;;
   esac
   stripped="${stripped#"${stripped%%[![:space:]]*}"}"
   stripped="${stripped%"${stripped##*[![:space:]]}"}"

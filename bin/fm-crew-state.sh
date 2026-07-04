@@ -47,6 +47,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-context-lib.sh
+. "$SCRIPT_DIR/fm-context-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -65,8 +67,12 @@ SEP=' · '
 
 # Emit the one canonical line and exit 0. Detail is optional.
 emit() {  # <state> <source> [detail]
-  local line="state: $1${SEP}source: $2"
+  local line="state: $1${SEP}source: $2" pct
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  if [ "${FM_CREW_STATE_CONTEXT:-1}" != 0 ]; then
+    pct=$(fm_context_percent_from_meta "$META" "$STATE" 2>/dev/null || true)
+    [ -n "$pct" ] && line="$line${SEP}context: ${pct}%"
+  fi
   printf '%s\n' "$line"
   exit 0
 }
@@ -139,11 +145,11 @@ pane_readable() {  # <target>
 }
 # crew_pane_is_busy: the busy-signature fallback, backend-aware the same way -
 # fm_backend_busy_state's native semantic state (herdr's agent.get) when
-# available, else the shared tmux pane-regex reader (fm_pane_is_busy,
-# bin/fm-tmux-lib.sh) unchanged for tmux/unknown.
+# available, else the shared bounded-capture busy-signature reader
+# (fm_pane_is_busy, bin/fm-tmux-lib.sh) for tmux/unknown.
 #
 # `busy` alone is trusted outright. Both `idle` and unknown/unparseable fall
-# through to the shared tail-regex corroboration, NOT just unknown: herdr's
+# through to the shared rendered busy-signature corroboration, NOT just unknown: herdr's
 # agent.get reports generation state ("working" while the model is streaming
 # a turn, "done"/"idle" once it is not - docs/herdr-backend.md "Busy state"),
 # which is a narrower signal than "this crew's turn/tool call is still in
@@ -171,8 +177,7 @@ crew_pane_is_busy() {  # <target>
         busy) return 0 ;;
         *)
           tail40=$(fm_backend_capture "$TASK_BACKEND" "$1" 40 "$EXPECTED_LABEL" 2>/dev/null) || return 1
-          printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
-            | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+          printf '%s' "$tail40" | fm_capture_has_busy_signature
           ;;
       esac
       ;;

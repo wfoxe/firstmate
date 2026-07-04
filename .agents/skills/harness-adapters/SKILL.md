@@ -76,7 +76,7 @@ Natural language is acceptable if uncertain.
 
 | Fact | Value |
 |---|---|
-| Busy-pane signature | `esc to interrupt` |
+| Busy-pane signature | Current Claude Code v2.1.193: spinner row with elapsed time, e.g. `Pondering… (7s · thinking with xhigh effort)` or `Transfiguring… (15s · ↓ 148 tokens)`. Older builds may show `esc to interrupt`. |
 | Exit command | `/exit` |
 | Interrupt | single Escape |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`) |
@@ -92,6 +92,9 @@ The CLI's `--prompt-suggestions` flag is print/SDK-mode only and does not suppre
 As defense in depth for any pane that flag cannot reach, including the captain's own firstmate composer that away-mode reads, the pane reader in `bin/fm-tmux-lib.sh` captures only the composer line with ANSI styling, drops dim/faint SGR 2 runs, and ignores them, so only normal-intensity typed text counts as pending input.
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
+
+Busy detection was re-verified live on 2026-07-04 against Claude Code 2.1.193 in tmux.
+The current TUI did not render `esc to interrupt`; the busy row appeared above the footer/statusline, so firstmate's pane predicate scans the bounded capture for the elapsed-time spinner shape instead of only the last footer lines.
 
 ## codex (VERIFIED 2026-06-11, codex-cli 0.139.0)
 

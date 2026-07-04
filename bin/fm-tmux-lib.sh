@@ -34,10 +34,21 @@
 # All functions are `set -u` and `set -e` safe (guarded tmux calls, explicit
 # returns) so they can be sourced into either context.
 
-# Busy footers per harness (mirror fm-watch.sh). claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel"
-# (grok's mid-turn cancel hint, shown iff a turn is running - verified grok 0.2.73).
-FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'
+# Busy signatures per harness (mirror fm-watch.sh and the away daemon).
+# claude/codex older builds: "esc to interrupt"; opencode: "esc interrupt";
+# pi: "Working..."; grok: "Ctrl+c:cancel" (verified grok 0.2.73).
+# Current Claude Code (verified live on v2.1.193, 2026-07-04) no longer renders
+# the interrupt hint in the footer. It renders a spinner row such as
+# "Pondering… (7s · thinking with xhigh effort)" while thinking and
+# "Transfiguring… (15s · ↓ 148 tokens)" while streaming/tooling. Match the
+# elapsed-time parenthetical only when it also carries Claude's busy words
+# ("thinking" or "tokens") so ordinary percentages/timers stay inert.
+FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|(…|\.\.\.)[[:space:]]*\([0-9]+s[[:space:]]*[^)]*(thinking|tokens?)[^)]*\)'
+
+fm_capture_has_busy_signature() {  # <capture-text>
+  grep -v '^[[:space:]]*$' \
+    | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+}
 
 # fm_tmux_strip_ghost: remove dim/faint (ANSI SGR 2) styled runs from one captured
 # composer line, then drop any remaining escape sequences, leaving only the plain,
@@ -155,13 +166,13 @@ fm_pane_input_pending() {  # <target>
   [ "$(fm_tmux_composer_state "$1")" = pending ]
 }
 
-# fm_pane_is_busy: 0 if the pane's last few non-blank lines show a busy footer
-# (an agent mid-turn). Scans a 40-line tail like fm-watch.sh.
+# fm_pane_is_busy: 0 if the bounded pane capture shows a busy signature (an
+# agent mid-turn). Scans the whole 40-line tail: current Claude Code can render
+# its spinner above tip/footer/status rows, outside the old last-six-line window.
 fm_pane_is_busy() {  # <target>
   local win=$1 tail40
   tail40=$(tmux capture-pane -p -t "$win" -S -40 2>/dev/null) || return 1
-  printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
-    | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+  printf '%s' "$tail40" | fm_capture_has_busy_signature
 }
 
 # fm_tmux_submit_core: type <text> into <target> ONCE, then submit with Enter,

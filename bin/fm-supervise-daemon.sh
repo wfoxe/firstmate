@@ -561,8 +561,7 @@ stale_window_is_busy() {  # <window> <state>
     busy) return 0 ;;
     idle) return 1 ;;
     *)
-      printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
-        | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+      printf '%s' "$tail40" | fm_capture_has_busy_signature
       ;;
   esac
 }
@@ -830,7 +829,7 @@ should_force_self() {  # <reason>
 is_wake_reason() {  # <reason>
   local reason=$1
   case "$reason" in
-    signal:*|stale:*|check:*|heartbeat|heartbeat:*) return 0 ;;
+    signal:*|stale:*|check:*|heartbeat|heartbeat:*|rotation-due:*) return 0 ;;
   esac
   return 1
 }
@@ -849,6 +848,7 @@ handle_wake() {  # <reason> <state>
               decision=$(classify_signal "$arg" "$state") ;;
     stale:*)  kind=stale; arg="${reason#stale: }"
               decision=$(classify_stale "$arg" "$state") ;;
+    rotation-due:*) decision="escalate|$reason" ;;
     check:*)  decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
     *)        decision=$(classify_unknown "$reason") ;;

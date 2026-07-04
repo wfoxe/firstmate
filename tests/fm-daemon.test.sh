@@ -294,7 +294,10 @@ test_handle_wake_routes_self_and_escalate() {
   printf 'done: PR 1\n' > "$state/h-done.status"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $state/h-done.status" "$state"
   [ -s "$state/.subsuper-escalations" ] || fail "captain signal was not buffered by handle_wake"
-  pass "handle_wake routes routine->self and captain->escalate"
+  : > "$state/.subsuper-escalations"
+  FM_STATE_OVERRIDE="$state" handle_wake "rotation-due: task 89%" "$state"
+  grep -F "rotation-due: task 89%" "$state/.subsuper-escalations" >/dev/null || fail "rotation-due was not buffered by handle_wake"
+  pass "handle_wake routes routine->self and captain/rotation->escalate"
 }
 
 test_inject_skip_forces_self() {
@@ -314,6 +317,7 @@ test_is_wake_reason_distinguishes_status_stdout() {
   is_wake_reason "stale: s:fm-x" || fail "stale: not recognized as wake"
   is_wake_reason "check: /s/c.sh: merged" || fail "check: not recognized as wake"
   is_wake_reason "heartbeat" || fail "heartbeat not recognized as wake"
+  is_wake_reason "rotation-due: task 89%" || fail "rotation-due not recognized as wake"
   is_wake_reason "watcher: already running" && fail "singleton status line misclassified as wake"
   is_wake_reason "watcher: already running pid 123" && fail "singleton status (pid) misclassified as wake"
   pass "is_wake_reason distinguishes watcher wake reasons from singleton-status stdout"

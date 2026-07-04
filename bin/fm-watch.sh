@@ -23,6 +23,10 @@
 #   check: <script>: <out> per-task check output, always actionable
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
+#   rotation-due: <id> <pct>%
+#                          a crew reached FM_ROTATE_THRESHOLD context fullness
+#                          at a turn boundary and is not provably working
+#                          (never emitted while the busy signature is present)
 # For normal supervision, re-arm after each printed reason by running
 # bin/fm-watch-arm.sh through the harness's tracked background mechanism. Direct
 # duplicate invocations of this script still no-op through the watcher singleton
@@ -51,6 +55,8 @@ mkdir -p "$STATE"
 # see bin/fm-backend.sh and docs/herdr-backend.md.
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$SCRIPT_DIR/fm-tmux-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -106,12 +112,9 @@ CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
-# Busy signatures per harness, OR-ed. Extend via env when new adapters are verified.
-# claude/codex: "esc to interrupt"; opencode: "esc interrupt"; pi: "Working...";
-# grok: "Ctrl+c:cancel" (the mid-turn cancel hint in grok's keybind bar, shown iff a
-# turn is running; absent when idle - verified grok 0.2.73, ASCII to avoid the
-# locale fragility of matching grok's braille spinner glyph directly).
-BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
+# Busy signatures per harness, OR-ed. The default lives in fm-tmux-lib.sh so
+# fm-send/daemon/watcher/current-state reads share the same verified predicate.
+BUSY_REGEX=${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}
 # Always-on wake triage: most wakes during a long crew validation are benign (a
 # working: note or turn-end while a pipeline runs, a no-change heartbeat). Rather
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
@@ -129,10 +132,12 @@ BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
-# wake) and never double-triages - and never runs the costly provably-working read.
+# wake) and never double-triages ordinary wakes. Rotation-due is still checked at
+# turn boundaries before the daemon receives the batched wake.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
+ROTATE_THRESHOLD=$(fm_context_threshold)
 
 # afk_present: 0 while the away-mode flag exists. When set, the daemon wraps this
 # watcher and owns triage, so the watcher must behave one-shot (enqueue + exit on
@@ -162,8 +167,8 @@ hash_pane() {
 # a backend's native semantic busy state (fm_backend_busy_state - herdr's
 # agent.get; herdr-addendum "busy state" row, "the first backend where
 # fm_session_busy_state gets real semantics"); falls back to the existing
-# pane-tail regex ONLY when the backend reports unknown (tmux always does, so
-# its path is unchanged byte-for-byte). <tail40> is the same bounded capture
+# bounded-capture busy-signature regex ONLY when the backend reports unknown
+# (tmux always does). <tail40> is the same bounded capture
 # already read for hashing, so this adds no extra backend calls on the
 # regex-fallback path.
 window_is_busy() {  # <window> <tail40>
@@ -173,7 +178,7 @@ window_is_busy() {  # <window> <tail40>
     busy) return 0 ;;
     idle) return 1 ;;
     *)
-      printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 | grep -qiE "$BUSY_REGEX"
+      printf '%s' "$tail40" | FM_BUSY_REGEX="$BUSY_REGEX" fm_capture_has_busy_signature
       ;;
   esac
 }
@@ -340,6 +345,42 @@ mark_all_captain_relevant_surfaced() {
   done < <(scan_captain_relevant_statuses "$STATE")
 }
 
+_rotation_seen_path() { printf '%s/.rotation-seen-%s' "$STATE" "$(printf '%s' "$1" | tr ':/.' '___')"; }
+
+rotation_seen_matches() {  # <id> <pct> <signature>
+  local id=$1 pct=$2 sig=$3 seen
+  seen=$(cat "$(_rotation_seen_path "$id")" 2>/dev/null || true)
+  [ "$seen" = "pct=$pct sig=$sig" ]
+}
+
+mark_rotation_seen() {  # <id> <pct> <signature>
+  local id=$1 pct=$2 sig=$3
+  printf 'pct=%s sig=%s' "$pct" "$sig" > "$(_rotation_seen_path "$id")"
+}
+
+rotation_due_reason() {  # <id> <signature>
+  local id=$1 sig=$2 pct meta backend kind harness
+  [ -n "$id" ] || return 1
+  meta="$STATE/$id.meta"
+  [ -f "$meta" ] || return 1
+  backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
+  kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
+  harness=$(fm_meta_get "$meta" harness 2>/dev/null || true)
+  [ -n "$backend" ] || backend=tmux
+  [ -n "$kind" ] || kind=ship
+  # Do not wake firstmate for sessions fm-rotate cannot safely relaunch.
+  # Unsupported backends would otherwise produce one doomed rotation wake per
+  # high-context boundary. Secondmate rotation needs its own stow contract.
+  case "$backend" in tmux|herdr) ;; *) return 1 ;; esac
+  [ "$kind" != secondmate ] || return 1
+  [ "$harness" = grok ] && [ "$backend" = orca ] && return 1
+  pct=$(crew_context_percent "$id" "$STATE" 2>/dev/null || true)
+  case "$pct" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pct" -ge "$ROTATE_THRESHOLD" ] || return 1
+  rotation_seen_matches "$id" "$pct" "$sig" && return 1
+  printf 'rotation-due: %s %s%%' "$id" "$pct"
+}
+
 # Cheap heartbeat fleet-scan (the always-on twin of the daemon's catch-all). 0 if
 # any captain-relevant status has NOT already been surfaced to firstmate (its
 # content differs from the .hb-surfaced-<task> marker). Pure detect, no side
@@ -412,6 +453,72 @@ while :; do
 $pending
 EOF
     reason="signal:$files"
+    rotation_reason=""
+    rotation_task=""
+    rotation_pct=""
+    rotation_sig=""
+    signal_actionable=false
+    if signal_reason_is_actionable $files; then
+      signal_actionable=true
+    fi
+    if [ "$signal_actionable" != true ]; then
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        base=${f##*/}
+        case "$base" in
+          *.turn-ended) task=${base%.turn-ended} ;;
+          *) continue ;;
+        esac
+        # A high-context turn-end is rotation-actionable only after the crew is
+        # no longer provably working. Terminal/actionable signals have already
+        # won above, so rotation never adds a costly state read before surfacing
+        # a real status verb.
+        crew_is_provably_working "$task" && continue
+        rotation_sig="signal:$sig"
+        rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+        [ -n "$rotation_reason" ] || continue
+        rotation_task=$task
+        rotation_pct=${rotation_reason##* }
+        rotation_pct=${rotation_pct%%%}
+        break
+      done <<EOF
+$pending
+EOF
+    fi
+    if [ -n "$rotation_reason" ]; then
+      if [ "$signal_actionable" = true ]; then
+        while IFS=$(printf '\t') read -r sf sig f; do
+          [ -n "$sf" ] || continue
+          fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+        done <<EOF
+$pending
+EOF
+        while IFS=$(printf '\t') read -r sf sig f; do
+          [ -n "$sf" ] || continue
+          printf '%s' "$sig" > "$sf"
+          mark_surfaced "$f"
+        done <<EOF
+$pending
+EOF
+        wake "$reason"
+      fi
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+      done <<EOF
+$pending
+EOF
+      fm_wake_append rotation-due "$rotation_task" "$rotation_reason" || exit 1
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        printf '%s' "$sig" > "$sf"
+        mark_surfaced "$f"
+      done <<EOF
+$pending
+EOF
+      mark_rotation_seen "$rotation_task" "$rotation_pct" "$rotation_sig"
+      wake "$rotation_reason"
+    fi
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
     #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
@@ -472,15 +579,28 @@ EOF
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
       # Busy match: a backend's native semantic state when available (herdr),
-      # else the last 6 non-blank lines only (the TUI footer area, where every
-      # verified harness renders its busy indicator) so busy-looking strings
-      # in displayed content cannot suppress stale detection.
+      # else the full bounded pane capture. Current Claude Code renders its
+      # busy spinner above the footer/status rows, so a footer-only tail is not
+      # a safe turn-boundary predicate.
       if [ "$n" -ge 2 ] && ! window_is_busy "$w" "$tail40"; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
         # firstmate. Detection itself is unchanged from above.
         if afk_present; then
           # Daemon owns triage: one-shot per distinct stale hash, as before.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
+            task=$(window_to_task "$w" "$STATE")
+            rotation_sig="stale:$h"
+            rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+            if [ -n "$rotation_reason" ] && ! crew_is_provably_working "$task"; then
+              rotation_pct=${rotation_reason##* }
+              rotation_pct=${rotation_pct%%%}
+              fm_wake_append stale "$w" "stale: $w" || exit 1
+              fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              mark_rotation_seen "$task" "$rotation_pct" "$rotation_sig"
+              wake "$rotation_reason"
+            fi
             fm_wake_append stale "$w" "stale: $w" || exit 1
             printf '%s' "$h" > "$sf"
             wake "stale: $w"
@@ -540,6 +660,19 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed non-terminal stale (provably working): $w"
             else
+              task=$(window_to_task "$w" "$STATE")
+              rotation_sig="stale:$h"
+              rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+              if [ -n "$rotation_reason" ]; then
+                rotation_pct=${rotation_reason##* }
+                rotation_pct=${rotation_pct%%%}
+                fm_wake_append stale "$w" "stale: $w" || exit 1
+                fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_rotation_seen "$task" "$rotation_pct" "$rotation_sig"
+                wake "$rotation_reason"
+              fi
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
