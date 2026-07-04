@@ -251,7 +251,8 @@ FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stal
 FM_WATCH_TRIAGE_LOG_MAX_BYTES=262144   # size cap for the watcher's absorbed-wake debug log
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=20   # seconds allowed for bootstrap's best-effort clone refresh
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
-FM_BUSY_REGEX='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'   # busy-pane signatures, shared by watcher, fm-crew-state pane fallback, and tmux helper
+FM_BUSY_REGEX='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|(…|\.\.\.)[[:space:]]*\([0-9]+s[[:space:]]*[^)]*(thinking|tokens?)[^)]*\)'   # busy-pane signatures, shared by watcher, fm-crew-state pane fallback, and tmux helper
+# Keep overrides at least as broad as this default; copying the older value without the Claude elapsed-time spinner branch weakens busy detection.
 FM_COMPOSER_IDLE_RE=    # optional empty-composer regex, applied after dim-ghost and border stripping
 GROK_HOME=              # optional Grok config home for firstmate's global grok turn-end hook; defaults to ~/.grok
 FM_SEND_RETRIES=3       # fm-send Enter-retry attempts after typing the line once
