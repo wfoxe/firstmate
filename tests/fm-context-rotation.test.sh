@@ -198,6 +198,25 @@ test_watcher_rotation_suppresses_same_signature() {
   pass "rotation-due suppresses repeats until the turn-boundary signature changes"
 }
 
+test_watcher_terminal_signal_wins_over_rotation() {
+  local dir state fakebin out drain_out capture pid
+  dir=$(make_case rotation-terminal-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  printf 'idle\nFable 5 │ fusor ████████░░ 89%%\n' > "$capture"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship" "harness=claude"
+  : > "$state/task.turn-ended"
+  printf 'done: ready for review\n' > "$state/task.status"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle'
+  watch_case_bg "$state" "$fakebin" "$out" "$capture"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not exit for terminal signal"
+  grep -F "signal: " "$out" >/dev/null || fail "watcher did not surface signal first: $(cat "$out")"
+  grep -Fx "rotation-due: task 89%" "$out" >/dev/null && fail "terminal signal should not be preempted by rotation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after terminal signal failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "signal:" >/dev/null || fail "terminal signal wake was not queued"
+  grep "$(printf '\trotation-due\t')" "$drain_out" >/dev/null && fail "rotation wake should not be queued ahead of terminal signal"
+  pass "watcher surfaces terminal signal before any rotation"
+}
+
 test_watcher_terminal_stale_wins_over_rotation() {
   local dir state fakebin out drain_out capture pid
   dir=$(make_case rotation-terminal-stale); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
@@ -385,6 +404,7 @@ test_crew_state_includes_context_when_available
 test_watcher_rotation_due_on_turn_boundary
 test_watcher_rotation_never_mid_turn
 test_watcher_rotation_suppresses_same_signature
+test_watcher_terminal_signal_wins_over_rotation
 test_watcher_terminal_stale_wins_over_rotation
 test_rotate_requests_missing_handoff
 test_rotate_accepts_explicit_generic_handoff

@@ -444,6 +444,10 @@ EOF
     rotation_task=""
     rotation_pct=""
     rotation_sig=""
+    signal_actionable=false
+    if signal_reason_is_actionable $files; then
+      signal_actionable=true
+    fi
     if ! afk_present; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
@@ -468,15 +472,23 @@ $pending
 EOF
     fi
     if [ -n "$rotation_reason" ]; then
-      fm_wake_append rotation-due "$rotation_task" "$rotation_reason" || exit 1
-      if signal_reason_is_actionable $files; then
+      if [ "$signal_actionable" = true ]; then
         while IFS=$(printf '\t') read -r sf sig f; do
           [ -n "$sf" ] || continue
           fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
         done <<EOF
 $pending
 EOF
+        while IFS=$(printf '\t') read -r sf sig f; do
+          [ -n "$sf" ] || continue
+          printf '%s' "$sig" > "$sf"
+          mark_surfaced "$f"
+        done <<EOF
+$pending
+EOF
+        wake "$reason"
       fi
+      fm_wake_append rotation-due "$rotation_task" "$rotation_reason" || exit 1
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         printf '%s' "$sig" > "$sf"
