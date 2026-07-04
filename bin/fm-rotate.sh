@@ -153,14 +153,25 @@ detect_handoff_rel() {
   return 1
 }
 
-send_text_submit() {  # <text>
-  local text=$1 settle=0.3 verdict
+send_text_submit() {  # <text> [strict-empty]
+  local text=$1 strict_empty=${2:-0} settle=0.3 verdict
   case "$text" in /*|\$*) settle=1.2 ;; esac
   verdict=$(fm_backend_send_text_submit "$BACKEND" "$TARGET" "$text" "${FM_ROTATE_SEND_RETRIES:-3}" "${FM_ROTATE_SEND_SLEEP:-0.4}" "$settle" "$EXPECTED_LABEL")
   case "$verdict" in
+    empty) return 0 ;;
     pending|send-failed)
+      if [ "$strict_empty" = 1 ]; then
+        echo "error: text submission to $TARGET during rotation was not confirmed empty (verdict=$verdict)" >&2
+        return 1
+      fi
       echo "error: text not submitted to $TARGET during rotation (verdict=$verdict)" >&2
       return 1
+      ;;
+    *)
+      if [ "$strict_empty" = 1 ]; then
+        echo "error: text submission to $TARGET during rotation was not confirmed empty (verdict=$verdict)" >&2
+        return 1
+      fi
       ;;
   esac
 }
@@ -282,8 +293,8 @@ launch_template() {
 
 exit_agent() {
   case "$HARNESS" in
-    claude|opencode) send_text_submit "/exit" ;;
-    codex|pi) send_text_submit "/quit" ;;
+    claude|opencode) send_text_submit "/exit" 1 ;;
+    codex|pi) send_text_submit "/quit" 1 ;;
     grok)
       fm_backend_send_key "$BACKEND" "$TARGET" C-q "$EXPECTED_LABEL"
       sleep 0.2

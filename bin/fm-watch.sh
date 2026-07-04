@@ -581,18 +581,6 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
-              task=$(window_to_task "$w" "$STATE")
-              rotation_sig="stale:$h"
-              rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
-              if [ -n "$rotation_reason" ]; then
-                rotation_pct=${rotation_reason##* }
-                rotation_pct=${rotation_pct%%%}
-                fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
-                printf '%s' "$h" > "$sf"
-                rm -f "$ssf"
-                mark_rotation_seen "$task" "$rotation_pct" "$rotation_sig"
-                wake "$rotation_reason"
-              fi
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"

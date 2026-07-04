@@ -72,7 +72,7 @@ case "${1:-}" in
         -l) lit=1 ;;
         Enter)
           printf '[ENTER]\n' >> "$SENT"
-          printf '│ > │\n' > "$CAPTURE"
+          [ "${FM_FAKE_TMUX_KEEP_PENDING:-0}" = 1 ] || printf '│ > │\n' > "$CAPTURE"
           ;;
         C-q|C-c|Escape)
           printf '[%s]\n' "$1" >> "$SENT"
@@ -198,6 +198,33 @@ test_watcher_rotation_suppresses_same_signature() {
   pass "rotation-due suppresses repeats until the turn-boundary signature changes"
 }
 
+test_watcher_terminal_stale_wins_over_rotation() {
+  local dir state fakebin out drain_out capture pid
+  dir=$(make_case rotation-terminal-stale); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  printf 'idle\nFable 5 │ fusor ████████░░ 89%%\n' > "$capture"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship" "harness=claude"
+  printf 'done: ready for review\n' > "$state/task.status"
+  seen_sig "$state/task.status" > "$state/.seen-task_status"
+  key=$(printf '%s' "test:fm-task" | tr ':/.' '___')
+  if command -v md5 >/dev/null 2>&1; then
+    hash=$(md5 -q "$capture")
+  else
+    hash=$(md5sum "$capture" | awk '{print $1}')
+  fi
+  printf '%s' "$hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle'
+  watch_case_bg "$state" "$fakebin" "$out" "$capture"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not exit for terminal stale"
+  grep -Fx "stale: test:fm-task" "$out" >/dev/null || fail "watcher did not surface terminal stale first: $(cat "$out")"
+  grep -Fx "rotation-due: task 89%" "$out" >/dev/null && fail "terminal stale should not be preempted by rotation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after terminal stale failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "stale: test:fm-task" >/dev/null || fail "terminal stale wake was not queued"
+  grep "$(printf '\trotation-due\t')" "$drain_out" >/dev/null && fail "rotation wake should not be queued ahead of terminal stale"
+  pass "watcher surfaces terminal stale before any rotation"
+}
+
 test_rotate_requests_missing_handoff() {
   local dir state data wt fakebin sent cap status out
   dir="$TMP_ROOT/rotate-missing"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
@@ -281,6 +308,29 @@ test_rotate_refuses_grok_orca_before_exit() {
   pass "fm-rotate fails closed for Grok on Orca before exit or relaunch"
 }
 
+test_rotate_refuses_unconfirmed_exit_submit() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-unconfirmed-exit"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" FM_FAKE_TMUX_KEEP_PENDING=1 "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "rotate should refuse unconfirmed exit submit, got $status: $out"
+  assert_contains "$out" "not confirmed empty" "rotate did not explain unconfirmed exit submit"
+  grep -F "export GOTMPDIR" "$sent" >/dev/null && fail "rotate continued with shell commands after unconfirmed exit"
+  pass "fm-rotate refuses to relaunch after an unconfirmed exit submit"
+}
+
 test_rotate_waits_for_handoff_then_relaunches() {
   local dir state data wt fakebin sent cap out pid i
   dir="$TMP_ROOT/rotate-wait"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"; out="$dir/out"
@@ -335,9 +385,11 @@ test_crew_state_includes_context_when_available
 test_watcher_rotation_due_on_turn_boundary
 test_watcher_rotation_never_mid_turn
 test_watcher_rotation_suppresses_same_signature
+test_watcher_terminal_stale_wins_over_rotation
 test_rotate_requests_missing_handoff
 test_rotate_accepts_explicit_generic_handoff
 test_rotate_autodetects_marked_handoff
 test_rotate_refuses_grok_orca_before_exit
+test_rotate_refuses_unconfirmed_exit_submit
 test_rotate_waits_for_handoff_then_relaunches
 test_rotate_relaunches_same_worktree_with_committed_handoff
