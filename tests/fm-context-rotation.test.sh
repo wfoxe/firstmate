@@ -381,6 +381,28 @@ test_rotate_refuses_grok_orca_before_exit() {
   pass "fm-rotate fails closed for Grok on Orca before exit or relaunch"
 }
 
+test_rotate_refuses_unsupported_shell_ready_before_exit() {
+  local dir state data wt status out sent
+  dir="$TMP_ROOT/rotate-zellij-unsupported"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fm_write_meta "$state/task.meta" "window=zellij-session:pane-task" "backend=zellij" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  : > "$sent"
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_FAKE_ZELLIJ_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "zellij rotate should fail before exit, got $status: $out"
+  assert_contains "$out" "shell readiness cannot be verified" "unsupported backend refusal was not clear"
+  assert_not_contains "$(cat "$sent")" "/exit" "unsupported backend rotate exited before refusing"
+  pass "fm-rotate refuses unsupported shell-readiness backends before exit"
+}
+
 test_rotate_refuses_unconfirmed_exit_submit() {
   local dir state data wt fakebin sent cap status out
   dir="$TMP_ROOT/rotate-unconfirmed-exit"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
@@ -538,6 +560,7 @@ test_rotate_refuses_dirty_after_committed_handoff
 test_rotate_accepts_explicit_generic_handoff
 test_rotate_autodetects_marked_handoff
 test_rotate_refuses_grok_orca_before_exit
+test_rotate_refuses_unsupported_shell_ready_before_exit
 test_rotate_refuses_unconfirmed_exit_submit
 test_rotate_waits_for_verified_shell_before_relaunch
 test_rotate_waits_for_handoff_then_relaunches

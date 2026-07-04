@@ -336,6 +336,19 @@ wait_for_shell_ready() {
   return 1
 }
 
+preflight_shell_ready_support() {
+  local status
+  set +e
+  fm_backend_shell_ready "$BACKEND" "$TARGET" "$WT" "$EXPECTED_LABEL" >/dev/null 2>&1
+  status=$?
+  set -e
+  if [ "$status" -eq 2 ]; then
+    echo "error: rotation for backend '$BACKEND' is unsupported: shell readiness cannot be verified before relaunch" >&2
+    return 1
+  fi
+}
+
+preflight_shell_ready_support
 write_pi_extension_if_needed
 write_continuation_prompt
 
