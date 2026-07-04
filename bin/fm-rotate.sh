@@ -69,6 +69,10 @@ EXPECTED_LABEL="fm-$ID"
 [ -n "$TASK_TMP" ] || TASK_TMP="/tmp/fm-$ID"
 [ -n "$WT" ] && [ -d "$WT" ] || { echo "error: worktree for $ID is missing: ${WT:-<empty>}" >&2; exit 1; }
 [ -n "$TARGET" ] || { echo "error: no backend target recorded for $ID" >&2; exit 1; }
+if [ "$HARNESS" = grok ] && [ "$BACKEND" = orca ]; then
+  echo "error: rotation for harness=grok on backend=orca is unsupported: Grok's verified exit chord is Ctrl-Q, but the Orca adapter does not support that key yet" >&2
+  exit 1
+fi
 
 worktree_dirty_line() {
   git -C "$WT" status --porcelain 2>/dev/null | grep -vE '^\?\? (\.claude/|\.fm-grok-turnend$)' | head -1 || true
@@ -109,8 +113,17 @@ handoff_is_committed() {  # <relpath>
   git -C "$WT" cat-file -e "HEAD:$rel" 2>/dev/null
 }
 
+handoff_matches_task() {  # <relpath>
+  local rel=$1
+  case "$rel" in
+    *"$ID"*) return 0 ;;
+  esac
+  git -C "$WT" show "HEAD:$rel" 2>/dev/null \
+    | grep -Ei "(task|rotation|handoff|stow)[[:space:]_-]*(id|for|task)?[[:space:]:#-]*(fm-)?${ID}([^[:alnum:]_-]|$)" >/dev/null
+}
+
 detect_handoff_rel() {
-  local rel best=""
+  local rel
   if [ -n "$HANDOFF_ARG" ]; then
     rel=$(path_to_worktree_rel "$HANDOFF_ARG") || {
       echo "error: --handoff must name an existing file inside the task worktree" >&2
@@ -133,13 +146,11 @@ detect_handoff_rel() {
       *) continue ;;
     esac
     handoff_is_committed "$rel" || continue
-    case "$rel" in
-      *"$ID"*) printf '%s\n' "$rel"; return 0 ;;
-    esac
-    [ -n "$best" ] || best=$rel
+    handoff_matches_task "$rel" || continue
+    printf '%s\n' "$rel"
+    return 0
   done < <(git -C "$WT" ls-files)
-  [ -n "$best" ] || return 1
-  printf '%s\n' "$best"
+  return 1
 }
 
 send_text_submit() {  # <text>

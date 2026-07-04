@@ -205,7 +205,9 @@ test_rotate_requests_missing_handoff() {
   make_git_worktree "$wt"
   mkdir -p "$wt/docs"
   printf 'ordinary rotation documentation, not a task handoff\n' > "$wt/docs/context-rotation.md"
+  printf 'old generic handoff, not for this task\n' > "$wt/docs/handoff.md"
   git -C "$wt" add docs/context-rotation.md
+  git -C "$wt" add docs/handoff.md
   git -C "$wt" commit -qm docs
   fakebin=$(make_rotate_fakebin "$dir")
   printf '│ > │\n' > "$cap"; : > "$sent"
@@ -218,6 +220,65 @@ test_rotate_requests_missing_handoff() {
   [ "$status" -eq 3 ] || fail "rotate without handoff should exit 3, got $status: $out"
   assert_contains "$(cat "$sent")" "Context rotation is due" "rotate did not request a handoff"
   pass "fm-rotate can request a committed handoff and return without waiting"
+}
+
+test_rotate_accepts_explicit_generic_handoff() {
+  local dir state data wt fakebin sent cap out
+  dir="$TMP_ROOT/rotate-explicit"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'explicitly selected handoff\n' > "$wt/docs/handoff.md"
+  git -C "$wt" add docs/handoff.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task --handoff docs/handoff.md)
+  assert_contains "$out" "rotated task" "rotate did not accept explicit committed handoff"
+  assert_grep "rotation_handoff=$wt/docs/handoff.md" "$state/task.meta" "rotate did not record explicit handoff"
+  pass "fm-rotate accepts explicit committed generic handoff"
+}
+
+test_rotate_autodetects_marked_handoff() {
+  local dir state data wt fakebin sent cap out
+  dir="$TMP_ROOT/rotate-marker"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'Task ID: task\nmarked handoff\n' > "$wt/docs/handoff.md"
+  git -C "$wt" add docs/handoff.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  assert_contains "$out" "rotated task" "rotate did not autodetect marked handoff"
+  assert_grep "rotation_handoff=$wt/docs/handoff.md" "$state/task.meta" "rotate did not record marked handoff"
+  pass "fm-rotate autodetects a committed handoff with an explicit task marker"
+}
+
+test_rotate_refuses_grok_orca_before_exit() {
+  local dir state data wt status out
+  dir="$TMP_ROOT/rotate-grok-orca"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fm_write_meta "$state/task.meta" "window=fm-task" "terminal=term-task" "backend=orca" "worktree=$wt" "project=$wt" "harness=grok" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "grok/orca rotate should fail before exit, got $status: $out"
+  assert_contains "$out" "harness=grok on backend=orca is unsupported" "grok/orca refusal was not clear"
+  [ ! -e "$data/task/rotation-prompt.md" ] || fail "grok/orca refusal should not write a continuation prompt"
+  pass "fm-rotate fails closed for Grok on Orca before exit or relaunch"
 }
 
 test_rotate_waits_for_handoff_then_relaunches() {
@@ -275,5 +336,8 @@ test_watcher_rotation_due_on_turn_boundary
 test_watcher_rotation_never_mid_turn
 test_watcher_rotation_suppresses_same_signature
 test_rotate_requests_missing_handoff
+test_rotate_accepts_explicit_generic_handoff
+test_rotate_autodetects_marked_handoff
+test_rotate_refuses_grok_orca_before_exit
 test_rotate_waits_for_handoff_then_relaunches
 test_rotate_relaunches_same_worktree_with_committed_handoff
