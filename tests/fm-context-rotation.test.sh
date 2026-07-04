@@ -683,7 +683,7 @@ test_rotate_waits_for_handoff_then_relaunches() {
 }
 
 test_rotate_relaunches_same_worktree_with_committed_handoff() {
-  local dir state data wt fakebin sent cap out
+  local dir state data wt fakebin sent cap out brief_dir
   dir="$TMP_ROOT/rotate-ready"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
   mkdir -p "$state" "$data"
   make_git_worktree "$wt"
@@ -701,6 +701,8 @@ test_rotate_relaunches_same_worktree_with_committed_handoff() {
   assert_contains "$(cat "$sent")" "cd '$wt'" "rotate did not return to the same worktree"
   assert_contains "$(cat "$sent")" "claude --dangerously-skip-permissions" "rotate did not relaunch Claude"
   assert_grep "rotation_handoff=$wt/docs/firstmate-handoff-task.md" "$state/task.meta" "rotate did not record the handoff"
+  brief_dir=$(cd "$data/task" && pwd -P)
+  assert_contains "$(cat "$data/task/rotation-prompt.md")" "original task brief before making changes: $brief_dir/brief.md" "rotate continuation prompt did not include the original brief path"
   pass "fm-rotate exits and relaunches in the same worktree after a committed handoff"
 }
 

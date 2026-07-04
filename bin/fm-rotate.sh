@@ -348,9 +348,11 @@ EOF
 }
 
 write_continuation_prompt() {
-  local dir="$DATA/$ID" branch
+  local dir="$DATA/$ID" branch brief data_abs
   mkdir -p "$dir"
   branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo HEAD)
+  data_abs=$(cd "$dir" && pwd -P)
+  brief="$data_abs/brief.md"
   PROMPT="$dir/rotation-prompt.md"
   cat > "$PROMPT" <<EOF
 # Continue Task After Context Rotation
@@ -359,7 +361,7 @@ You are continuing the same firstmate task after a soft context rotation.
 
 - Stay in this exact worktree: $WT
 - Stay on the existing branch: $branch
-- Read AGENTS.md and the original task brief before making changes.
+- Read AGENTS.md and the original task brief before making changes: $brief
 - Read the committed handoff/stow artifact: $HANDOFF_REL
 - Inspect git status and recent commits, then continue from the handoff.
 - Do not create a new worktree or duplicate the branch.
