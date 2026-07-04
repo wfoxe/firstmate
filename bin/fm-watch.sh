@@ -501,6 +501,12 @@ $pending
 EOF
         wake "$reason"
       fi
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+      done <<EOF
+$pending
+EOF
       fm_wake_append rotation-due "$rotation_task" "$rotation_reason" || exit 1
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
