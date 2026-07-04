@@ -341,6 +341,29 @@ test_rotate_accepts_explicit_generic_handoff() {
   pass "fm-rotate accepts explicit committed generic handoff"
 }
 
+test_rotate_refuses_explicit_stale_handoff() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-explicit-stale"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'old selected handoff\n' > "$wt/docs/handoff.md"
+  git -C "$wt" add docs/handoff.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp" "rotation_handoff=$wt/docs/handoff.md" "rotation_at=2099-01-01T00:00:00Z"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task --handoff docs/handoff.md 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "explicit stale handoff should fail, got $status: $out"
+  assert_contains "$out" "not newer than the previous rotation" "stale explicit handoff refusal was not clear"
+  assert_not_contains "$(cat "$sent")" "/exit" "stale explicit handoff exited before refusing"
+  pass "fm-rotate refuses an explicit stale handoff"
+}
+
 test_rotate_autodetects_marked_handoff() {
   local dir state data wt fakebin sent cap out
   dir="$TMP_ROOT/rotate-marker"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
@@ -358,6 +381,30 @@ test_rotate_autodetects_marked_handoff() {
   assert_contains "$out" "rotated task" "rotate did not autodetect marked handoff"
   assert_grep "rotation_handoff=$wt/docs/handoff.md" "$state/task.meta" "rotate did not record marked handoff"
   pass "fm-rotate autodetects a committed handoff with an explicit task marker"
+}
+
+test_rotate_ignores_autodetected_stale_handoff() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-marker-stale"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'Task ID: task\nold marked handoff\n' > "$wt/docs/handoff.md"
+  git -C "$wt" add docs/handoff.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp" "rotation_handoff=$wt/docs/handoff.md" "rotation_at=2099-01-01T00:00:00Z"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_ROTATE_WAIT_SECS=0 FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 3 ] || fail "autodetected stale handoff should request a fresh handoff, got $status: $out"
+  assert_contains "$out" "rotation pending handoff" "stale autodetected handoff did not request a fresh handoff"
+  assert_contains "$(cat "$sent")" "Context rotation is due" "stale autodetected handoff did not send the handoff request"
+  assert_not_contains "$(cat "$sent")" "/exit" "stale autodetected handoff exited before a fresh handoff"
+  pass "fm-rotate ignores autodetected stale handoffs"
 }
 
 test_rotate_refuses_grok_orca_before_exit() {
@@ -558,7 +605,9 @@ test_rotate_requests_missing_handoff
 test_rotate_requests_handoff_before_dirty_refusal
 test_rotate_refuses_dirty_after_committed_handoff
 test_rotate_accepts_explicit_generic_handoff
+test_rotate_refuses_explicit_stale_handoff
 test_rotate_autodetects_marked_handoff
+test_rotate_ignores_autodetected_stale_handoff
 test_rotate_refuses_grok_orca_before_exit
 test_rotate_refuses_unsupported_shell_ready_before_exit
 test_rotate_refuses_unconfirmed_exit_submit

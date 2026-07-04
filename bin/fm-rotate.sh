@@ -106,6 +106,40 @@ handoff_is_committed() {  # <relpath>
   git -C "$WT" cat-file -e "HEAD:$rel" 2>/dev/null
 }
 
+date_to_epoch() {  # <iso-date>
+  local date_value=$1
+  [ -n "$date_value" ] || return 1
+  if date -u -d "$date_value" '+%s' >/dev/null 2>&1; then
+    date -u -d "$date_value" '+%s'
+    return 0
+  fi
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$date_value" '+%s' 2>/dev/null
+}
+
+last_rotation_epoch() {
+  local rotation_at
+  rotation_at=$(meta_value rotation_at)
+  if [ -n "$rotation_at" ]; then
+    date_to_epoch "$rotation_at" || return 1
+    return 0
+  fi
+  [ -z "$(meta_value rotation_handoff)" ] || return 1
+  return 2
+}
+
+handoff_is_fresh() {  # <relpath>
+  local rel=$1 cutoff status handoff_epoch
+  set +e
+  cutoff=$(last_rotation_epoch)
+  status=$?
+  set -e
+  [ "$status" -eq 2 ] && return 0
+  [ "$status" -eq 0 ] || return 1
+  handoff_epoch=$(git -C "$WT" log -1 --format=%ct -- "$rel" 2>/dev/null) || return 1
+  [ -n "$handoff_epoch" ] || return 1
+  [ "$handoff_epoch" -gt "$cutoff" ]
+}
+
 handoff_matches_task() {  # <relpath>
   local rel=$1
   case "$rel" in
@@ -126,6 +160,10 @@ detect_handoff_rel() {
       echo "error: --handoff $rel is not a committed tracked file" >&2
       return 1
     }
+    handoff_is_fresh "$rel" || {
+      echo "error: --handoff $rel is not newer than the previous rotation recorded in $META" >&2
+      return 1
+    }
     printf '%s\n' "$rel"
     return 0
   fi
@@ -139,6 +177,7 @@ detect_handoff_rel() {
       *) continue ;;
     esac
     handoff_is_committed "$rel" || continue
+    handoff_is_fresh "$rel" || continue
     handoff_matches_task "$rel" || continue
     printf '%s\n' "$rel"
     return 0
