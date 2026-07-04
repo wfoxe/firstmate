@@ -53,11 +53,19 @@ It intentionally mirrors the behavior-test baseline in [`.github/workflows/ci.ym
 ## Captain preferences (data/captain.md)
 
 Personal preferences for one captain's fleet live locally in `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md`.
+The firstmate-internal `/stow` hygiene pass treats this as curated session-loaded memory with a 40-line budget, preserving standing captain orders and safety constraints while consolidating stale or duplicate notes.
 
 ## Operational learnings (data/learnings.md)
 
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed right after `data/captain.md` in the session-start context digest.
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: rewrite or prune stale entries instead of appending forever.
+`/stow` applies the same gated hygiene pass here with a 60-line budget.
+
+## Memory hygiene timestamp (data/.last-memory-hygiene)
+
+The firstmate-internal `/stow` skill records its last curated-memory hygiene pass in local `data/.last-memory-hygiene` as an ISO date.
+If the timestamp is absent or more than 7 days old, or the captain explicitly asks to prune memory, `/stow` checks and compresses `data/captain.md`, `data/learnings.md`, and `data/projects.md` descriptions.
+Task briefs, scout reports, and `data/backlog.md` are not part of this pass.
 
 ## Secondmate routes (data/secondmates.md)
 
