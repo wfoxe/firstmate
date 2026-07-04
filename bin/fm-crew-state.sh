@@ -145,11 +145,11 @@ pane_readable() {  # <target>
 }
 # crew_pane_is_busy: the busy-signature fallback, backend-aware the same way -
 # fm_backend_busy_state's native semantic state (herdr's agent.get) when
-# available, else the shared tmux pane-regex reader (fm_pane_is_busy,
-# bin/fm-tmux-lib.sh) unchanged for tmux/unknown.
+# available, else the shared bounded-capture busy-signature reader
+# (fm_pane_is_busy, bin/fm-tmux-lib.sh) for tmux/unknown.
 #
 # `busy` alone is trusted outright. Both `idle` and unknown/unparseable fall
-# through to the shared tail-regex corroboration, NOT just unknown: herdr's
+# through to the shared rendered busy-signature corroboration, NOT just unknown: herdr's
 # agent.get reports generation state ("working" while the model is streaming
 # a turn, "done"/"idle" once it is not - docs/herdr-backend.md "Busy state"),
 # which is a narrower signal than "this crew's turn/tool call is still in

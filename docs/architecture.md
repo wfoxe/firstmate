@@ -45,7 +45,7 @@ New spawns select a backend from `--backend`, then `FM_BACKEND`, then local `con
 Runtime auto-detection is innermost-first: `$TMUX` wins over `HERDR_ENV=1` when firstmate is inside tmux nested in herdr, auto-detected herdr prints a one-time opt-out notice, and auto-detected tmux stays silent; zellij and orca are never auto-detected (only explicit selection), a deliberate choice to avoid ever reusing an ambient session a human might be attached to.
 Unknown backend names fail loudly.
 For compatibility, default tmux tasks do not write `backend=tmux`; every reader treats a missing `backend=` field as `tmux`.
-`fm-watch.sh` polls each window's backend for a busy state: tmux, zellij, and orca have no native primitive and always report unknown, preserving the original pane-tail-regex detection unchanged; herdr's `agent.get` semantic state (working/idle/done/blocked) is consulted first for stale detection, with unknown native states falling back to the same regex.
+`fm-watch.sh` polls each window's backend for a busy state: tmux, zellij, and orca have no native primitive and always report unknown, so they use the shared bounded-capture busy-signature fallback; herdr's `agent.get` semantic state (working/idle/done/blocked) is consulted first for stale detection, with idle or unknown native states corroborated against the same rendered busy-signature fallback.
 That poll loop is the default event source for backends with no native push events, so this stays an extraction of the abstraction rather than a watcher rewrite.
 Herdr is experimental and can be selected explicitly or by runtime auto-detection: treehouse remains the worktree provider for it exactly as it is for tmux (herdr is a session provider only), and its full verification - the container shape decision, created-vs-adopted default-tab prune safety, restored-layout husk respawn idempotency, verified CLI facts, a verified small-`--lines` capture bug and its workaround, and known gaps - is recorded in `docs/herdr-backend.md`.
 Herdr's container shape is workspace-per-home plus tab-per-task: the primary home uses workspace label `firstmate`, secondmate homes use `2ndmate-<secondmate-id>`, and recovery/list-live scopes to the current `FM_HOME`'s workspace.
@@ -202,7 +202,7 @@ Use `/stow` before an intentional reset when the conversation may hold durable k
 
 The fleet rotation method is stow, then restart.
 For crews, the watcher emits `rotation-due: <id> <pct>%` only when verified context fullness is at or above `FM_ROTATE_THRESHOLD` (default `70`) and the crew is at a turn boundary with no busy signal.
-`fm-rotate.sh` then requires a committed handoff/stow doc, exits the old harness, and relaunches a fresh harness process in the same endpoint, worktree, and branch.
+`fm-rotate.sh` then requires a committed handoff/stow doc that is fresh for the current rotation, exits the old harness, and relaunches a fresh harness process in the same endpoint, worktree, and branch.
 The verified relaunch path currently supports tmux and herdr endpoints; zellij and Orca do not emit `rotation-due` wakes because the watcher suppresses rotation signals for backends that cannot be safely relaunched.
 For firstmate itself, `/stow` is the canonical stow step; when firstmate is started through `fm-run.sh`, exiting after `/stow` relaunches a fresh session.
 See [`docs/context-rotation.md`](context-rotation.md).

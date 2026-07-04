@@ -34,7 +34,8 @@ The installed `codex-cli 0.142.5` help output does not document a footer contrac
 Reported formats such as `NN% context left` would need adapter code that converts remaining context into fullness.
 
 `bin/fm-rotate.sh <id>` performs the crew restart.
-It requires a committed handoff/stow document (or `--handoff <path>` naming one), refuses any still-dirty worktree before exiting/relaunching, exits the old harness session with the verified adapter command, waits for backend-specific evidence that the endpoint has returned to a shell in the task worktree, then launches a fresh harness process in the same endpoint, same worktree, and same branch with a continuation prompt pointing at the handoff.
+It requires a committed handoff/stow document (or `--handoff <path>` naming one) that is newer than the previous recorded rotation, refuses any still-dirty worktree before exiting/relaunching, exits the old harness session with the verified adapter command, waits for backend-specific evidence that the endpoint has returned to a shell in the task worktree, then launches a fresh harness process in the same endpoint, same worktree, and same branch with a generated `data/<id>/rotation-prompt.md` continuation prompt pointing at the handoff.
+After the fresh harness launch starts, it appends `rotation_handoff=` and `rotation_at=` to the task meta; older handoff docs are ignored on later rotations unless a fresh committed handoff is supplied.
 That verified relaunch path currently supports tmux and herdr endpoints only.
 Zellij and Orca tasks do not emit `rotation-due` wakes until their adapters expose a passive, verified shell-readiness check after harness exit.
 Secondmates are excluded from parent-side `fm-rotate.sh` because their durable stow lives in their own firstmate home, not in a committed task worktree artifact.
@@ -55,7 +56,7 @@ exit
 Start firstmate through `bin/fm-run.sh`.
 The wrapper relaunches a fresh harness session after the previous one exits, carrying a startup prompt that runs `bin/fm-session-start.sh` and resumes supervision.
 It backs off when the session exits too quickly.
-Use `--harness <name>` or `-- <command...>` to choose the exact harness command.
+Use `--harness <name>` or `-- <command...>` to choose the exact harness command; `--once` runs one launch without the restart loop for tests or smoke checks.
 To stop instead of rotate, create `state/.fm-run-stop` (or set `FM_RUN_STOP_FILE`) before exiting the harness; the wrapper exits instead of relaunching.
 
 Claude Code 2.1.193 documents `PreCompact` and `PostCompact` hooks in its official hook reference, but not a context-threshold hook.

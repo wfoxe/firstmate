@@ -166,8 +166,8 @@ hash_pane() {
 # a backend's native semantic busy state (fm_backend_busy_state - herdr's
 # agent.get; herdr-addendum "busy state" row, "the first backend where
 # fm_session_busy_state gets real semantics"); falls back to the existing
-# pane-tail regex ONLY when the backend reports unknown (tmux always does, so
-# its path is unchanged byte-for-byte). <tail40> is the same bounded capture
+# bounded-capture busy-signature regex ONLY when the backend reports unknown
+# (tmux always does). <tail40> is the same bounded capture
 # already read for hashing, so this adds no extra backend calls on the
 # regex-fallback path.
 window_is_busy() {  # <window> <tail40>
