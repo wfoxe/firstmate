@@ -348,6 +348,18 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
   esac
 }
 
+fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pending|unknown
+  local backend=$1
+  shift
+  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  case "$backend" in
+    tmux) fm_tmux_composer_state "$1" ;;
+    herdr) fm_backend_herdr_composer_state "$1" ;;
+    orca) fm_backend_orca_composer_state "$1" ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 fm_backend_send_text_line() {  # <backend> <target> <text> [expected-label]
   local backend=$1
   shift

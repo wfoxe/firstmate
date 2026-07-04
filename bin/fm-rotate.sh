@@ -4,9 +4,9 @@
 # harness process in the recorded endpoint is exited and relaunched.
 #
 # Usage: fm-rotate.sh <task-id> [--handoff <path>]
-# If no committed handoff is found, the script sends the crew a handoff request,
-# waits for a committed handoff and a non-busy boundary, then restarts. Set
-# FM_ROTATE_WAIT_SECS=0 to request the handoff and return immediately.
+# If no committed handoff is found, the foreground-safe default sends the crew a
+# handoff request and exits 3. Set FM_ROTATE_WAIT_SECS to a positive value only
+# when this script is running as its own supervised background task.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$SCRIPT_DIR/fm-tmux-lib.sh"
 
 "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -69,10 +71,28 @@ EXPECTED_LABEL="fm-$ID"
 [ -n "$TASK_TMP" ] || TASK_TMP="/tmp/fm-$ID"
 [ -n "$WT" ] && [ -d "$WT" ] || { echo "error: worktree for $ID is missing: ${WT:-<empty>}" >&2; exit 1; }
 [ -n "$TARGET" ] || { echo "error: no backend target recorded for $ID" >&2; exit 1; }
-if [ "$HARNESS" = grok ] && [ "$BACKEND" = orca ]; then
-  echo "error: rotation for harness=grok on backend=orca is unsupported: Grok's verified exit chord is Ctrl-Q, but the Orca adapter does not support that key yet" >&2
-  exit 1
-fi
+
+preflight_rotation_support() {
+  local status
+  if [ "$KIND" = secondmate ]; then
+    echo "error: fm-rotate does not yet support kind=secondmate; rotate the secondmate from inside its own home with /stow, then relaunch it through the secondmate lifecycle" >&2
+    return 1
+  fi
+  if [ "$HARNESS" = grok ] && [ "$BACKEND" = orca ]; then
+    echo "error: rotation for harness=grok on backend=orca is unsupported: Grok's verified exit chord is Ctrl-Q, but the Orca adapter does not support that key yet" >&2
+    return 1
+  fi
+  set +e
+  fm_backend_shell_ready "$BACKEND" "$TARGET" "$WT" "$EXPECTED_LABEL" >/dev/null 2>&1
+  status=$?
+  set -e
+  if [ "$status" -eq 2 ]; then
+    echo "error: rotation for backend '$BACKEND' is unsupported: shell readiness cannot be verified before relaunch" >&2
+    return 1
+  fi
+}
+
+preflight_rotation_support || exit 1
 
 worktree_dirty_line() {
   git -C "$WT" status --porcelain 2>/dev/null | grep -vE '^\?\? (\.claude/|\.fm-grok-turnend$)' | head -1 || true
@@ -211,14 +231,51 @@ send_text_submit() {  # <text> [strict-empty]
 request_handoff() {
   local rel="docs/firstmate-handoff-$ID.md"
   case "$KIND" in scout) rel="docs/firstmate-scout-handoff-$ID.md" ;; esac
-  send_text_submit "Context rotation is due. Before continuing, stow the task state into a committed handoff doc (suggested path: $rel): current objective, branch, changed files, decisions, validation status, and next steps. Commit the handoff with your current work, then report working or done. Do not start new feature work until the handoff is committed."
+  send_text_submit "Context rotation is due. Before continuing, stow the task state into a committed handoff doc (suggested path: $rel): current objective, branch, changed files, decisions, validation status, and next steps. Commit the handoff with your current work, report working or done, and then STOP at the turn boundary. Do not start new feature work after the handoff is committed."
   echo "rotation requested handoff for $ID"
 }
 
+crew_busy_now() {
+  local bs capture
+  bs=$(fm_backend_busy_state "$BACKEND" "$TARGET" 2>/dev/null)
+  [ "$bs" = busy ] && return 0
+  capture=$(fm_backend_capture "$BACKEND" "$TARGET" "${FM_ROTATE_BUSY_CAPTURE_LINES:-80}" "$EXPECTED_LABEL" 2>/dev/null) || return 2
+  printf '%s' "$capture" | fm_capture_has_busy_signature && return 0
+  return 1
+}
+
+rotation_boundary_ready() {  # [quiet]
+  local quiet=${1:-0} busy_status composer
+  if crew_is_provably_working "$ID"; then
+    [ "$quiet" = 1 ] || echo "REFUSED: $ID is still provably working; rotate only at a turn boundary." >&2
+    return 1
+  fi
+  set +e
+  crew_busy_now
+  busy_status=$?
+  set -e
+  case "$busy_status" in
+    0)
+      [ "$quiet" = 1 ] || echo "REFUSED: $ID still shows a harness busy signature in a fresh pane capture; rotate only at a turn boundary." >&2
+      return 1
+      ;;
+    2)
+      [ "$quiet" = 1 ] || echo "REFUSED: could not verify $ID pane is idle immediately before exit; refusing to risk a mid-turn rotation." >&2
+      return 1
+      ;;
+  esac
+  composer=$(fm_backend_composer_state "$BACKEND" "$TARGET" "$EXPECTED_LABEL" 2>/dev/null || printf unknown)
+  if [ "$composer" != empty ]; then
+    [ "$quiet" = 1 ] || echo "REFUSED: $ID composer is not confirmed empty (state=$composer); refusing to send the exit command." >&2
+    return 1
+  fi
+  return 0
+}
+
 wait_for_handoff() {
-  local wait_secs=${FM_ROTATE_WAIT_SECS:-900} poll=${FM_ROTATE_WAIT_POLL_SECS:-10}
+  local wait_secs=${FM_ROTATE_WAIT_SECS:-0} poll=${FM_ROTATE_WAIT_POLL_SECS:-10}
   local deadline now dirty_after
-  case "$wait_secs" in ''|*[!0-9]*) wait_secs=900 ;; esac
+  case "$wait_secs" in ''|*[!0-9]*) wait_secs=0 ;; esac
   case "$poll" in ''|*[!0-9]*) poll=10 ;; esac
   [ "$poll" -gt 0 ] || poll=1
   [ "$wait_secs" -gt 0 ] || return 1
@@ -228,7 +285,7 @@ wait_for_handoff() {
     HANDOFF_REL=$(detect_handoff_rel 2>/dev/null || true)
     if [ -n "$HANDOFF_REL" ]; then
       dirty_after=$(worktree_dirty_line)
-      if [ -z "$dirty_after" ] && ! crew_is_provably_working "$ID"; then
+      if [ -z "$dirty_after" ] && rotation_boundary_ready 1; then
         return 0
       fi
     fi
@@ -256,10 +313,7 @@ if [ -n "$dirty" ]; then
   echo "REFUSED: worktree $WT has uncommitted changes after handoff wait." >&2
   exit 1
 fi
-if crew_is_provably_working "$ID"; then
-  echo "REFUSED: $ID is still provably working; rotate only at a turn boundary." >&2
-  exit 1
-fi
+rotation_boundary_ready || exit 1
 
 model_flag_for_harness() {
   local harness=$1 model=$2
@@ -339,8 +393,8 @@ launch_template() {
 
 exit_agent() {
   case "$HARNESS" in
-    claude|opencode) send_text_submit "/exit" 1 ;;
-    codex|pi) send_text_submit "/quit" 1 ;;
+    claude|opencode) send_text_submit "/exit" 1 || { cleanup_pending_exit_text; return 1; } ;;
+    codex|pi) send_text_submit "/quit" 1 || { cleanup_pending_exit_text; return 1; } ;;
     grok)
       fm_backend_send_key "$BACKEND" "$TARGET" C-q "$EXPECTED_LABEL"
       sleep 0.2
@@ -348,6 +402,12 @@ exit_agent() {
       ;;
     *) echo "error: no verified exit command for harness '$HARNESS'" >&2; return 1 ;;
   esac
+}
+
+cleanup_pending_exit_text() {
+  fm_backend_send_key "$BACKEND" "$TARGET" Escape "$EXPECTED_LABEL" >/dev/null 2>&1 || true
+  sleep 0.1
+  fm_backend_send_key "$BACKEND" "$TARGET" C-u "$EXPECTED_LABEL" >/dev/null 2>&1 || true
 }
 
 wait_for_shell_ready() {
@@ -375,19 +435,6 @@ wait_for_shell_ready() {
   return 1
 }
 
-preflight_shell_ready_support() {
-  local status
-  set +e
-  fm_backend_shell_ready "$BACKEND" "$TARGET" "$WT" "$EXPECTED_LABEL" >/dev/null 2>&1
-  status=$?
-  set -e
-  if [ "$status" -eq 2 ]; then
-    echo "error: rotation for backend '$BACKEND' is unsupported: shell readiness cannot be verified before relaunch" >&2
-    return 1
-  fi
-}
-
-preflight_shell_ready_support
 write_pi_extension_if_needed
 write_continuation_prompt
 
@@ -416,6 +463,36 @@ fi
 fm_backend_send_literal "$BACKEND" "$TARGET" "$LAUNCH" "$EXPECTED_LABEL"
 sleep 0.2
 fm_backend_send_key "$BACKEND" "$TARGET" Enter "$EXPECTED_LABEL"
+
+wait_for_harness_started() {
+  local timeout=${FM_ROTATE_LAUNCH_TIMEOUT:-20} poll=${FM_ROTATE_LAUNCH_POLL_SECS:-1}
+  local deadline status now
+  case "$timeout" in ''|*[!0-9]*) timeout=20 ;; esac
+  case "$poll" in ''|*[!0-9]*) poll=1 ;; esac
+  [ "$poll" -gt 0 ] || poll=1
+  deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    set +e
+    fm_backend_shell_ready "$BACKEND" "$TARGET" "$WT" "$EXPECTED_LABEL" >/dev/null 2>&1
+    status=$?
+    set -e
+    case "$status" in
+      0) ;;
+      2)
+        echo "error: backend '$BACKEND' stopped supporting shell readiness during relaunch verification" >&2
+        return 1
+        ;;
+      *) return 0 ;;
+    esac
+    now=$(date +%s)
+    [ "$now" -ge "$deadline" ] && break
+    sleep "$poll"
+  done
+  echo "error: relaunch command for $ID did not leave the verified shell within ${timeout}s; not recording rotation success" >&2
+  return 1
+}
+
+wait_for_harness_started
 
 {
   echo "rotation_handoff=$HANDOFF_ABS"

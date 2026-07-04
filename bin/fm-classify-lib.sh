@@ -118,7 +118,7 @@ signal_reason_is_actionable() {  # <file> ...
 crew_is_provably_working() {  # <id>
   local id=$1 line state src
   [ -n "$id" ] || return 1
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  line=$(FM_CREW_STATE_CONTEXT=0 "$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) return 1 ;; esac
   state=${line#state: }; state=${state%% *}
   [ "$state" = working ] || return 1

@@ -2,7 +2,8 @@
 # Run firstmate in a restart loop. A firstmate self-rotation is:
 #   /stow
 #   exit the harness
-# This wrapper then starts a fresh harness session in the same firstmate home.
+# This wrapper then starts a fresh harness session in the same firstmate home
+# with a startup prompt that runs session-start and resumes supervision.
 #
 # Usage:
 #   bin/fm-run.sh [--harness claude|codex|opencode|pi|grok] [-- <command...>]
@@ -12,10 +13,13 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 HARNESS=${FM_RUN_HARNESS:-}
 ONCE=0
 CMD=()
+STOP_FILE=${FM_RUN_STOP_FILE:-$STATE/.fm-run-stop}
+START_PROMPT=${FM_RUN_START_PROMPT:-"Run bin/fm-session-start.sh now. Then resume normal firstmate supervision from AGENTS.md: handle any drained wakes, and if tasks are in flight make sure bin/fm-watch-arm.sh is running as its own tracked background task before ending the turn."}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -55,11 +59,11 @@ if [ "${#CMD[@]}" -eq 0 ]; then
     [ -n "$HARNESS" ] && [ "$HARNESS" != unknown ] || HARNESS=claude
   fi
   case "$HARNESS" in
-    claude) CMD=(claude) ;;
-    codex) CMD=(codex) ;;
-    opencode) CMD=(opencode) ;;
-    pi) CMD=(pi) ;;
-    grok) CMD=(grok) ;;
+    claude) CMD=(claude "$START_PROMPT") ;;
+    codex) CMD=(codex "$START_PROMPT") ;;
+    opencode) CMD=(opencode --prompt "$START_PROMPT") ;;
+    pi) CMD=(pi "$START_PROMPT") ;;
+    grok) CMD=(grok "$START_PROMPT") ;;
     *) echo "fm-run: unknown harness '$HARNESS'; pass -- <command...>" >&2; exit 2 ;;
   esac
 fi
@@ -75,6 +79,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 while :; do
+  if [ -e "$STOP_FILE" ]; then
+    echo "fm-run: stop file present at $STOP_FILE; not launching firstmate" >&2
+    exit 0
+  fi
   start=$(date +%s)
   set +e
   (
@@ -85,6 +93,10 @@ while :; do
   rc=$?
   set -e
   [ "$ONCE" = 1 ] && exit "$rc"
+  if [ -e "$STOP_FILE" ]; then
+    echo "fm-run: stop file present at $STOP_FILE; not relaunching firstmate" >&2
+    exit "$rc"
+  fi
   elapsed=$(( $(date +%s) - start ))
   if [ "$elapsed" -lt "$MIN_RUNTIME" ]; then
     echo "fm-run: session exited after ${elapsed}s (code $rc); backing off ${BACKOFF}s before relaunch" >&2

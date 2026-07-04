@@ -561,8 +561,7 @@ stale_window_is_busy() {  # <window> <state>
     busy) return 0 ;;
     idle) return 1 ;;
     *)
-      printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
-        | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+      printf '%s' "$tail40" | fm_capture_has_busy_signature
       ;;
   esac
 }

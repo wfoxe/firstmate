@@ -56,11 +56,12 @@ case "${1:-}" in
   display-message)
     for a in "$@"; do
       case "$a" in
-        *cursor_y*) printf '0\n'; exit 0 ;;
+        *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;;
         *pane_current_path*) printf '%s\n' "${FM_FAKE_TMUX_PATH:-}"; exit 0 ;;
         *pane_current_command*)
-          if [ -n "${FM_FAKE_TMUX_COMMAND_FILE:-}" ] && [ -f "$FM_FAKE_TMUX_COMMAND_FILE" ]; then
-            cat "$FM_FAKE_TMUX_COMMAND_FILE"
+          cmdfile="${FM_FAKE_TMUX_COMMAND_FILE:-$SENT.command}"
+          if [ -f "$cmdfile" ]; then
+            cat "$cmdfile"
           else
             printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-bash}"
           fi
@@ -70,7 +71,23 @@ case "${1:-}" in
     printf '%%1\n'
     exit 0 ;;
   capture-pane)
-    cat "$CAPTURE" 2>/dev/null
+    S=""; E=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -S) S="${2:-}"; shift 2; continue ;;
+        -E) E="${2:-}"; shift 2; continue ;;
+        *) shift ;;
+      esac
+    done
+    if [ -n "$S" ] && [ "$S" = "$E" ]; then
+      case "$S" in
+        ''|*[!0-9]*) cat "$CAPTURE" 2>/dev/null ;;
+        *) awk -v n="$S" 'NR == n + 1 { print; found=1 } END { if (!found) print "" }' "$CAPTURE" 2>/dev/null ;;
+      esac
+    else
+      cat "$CAPTURE" 2>/dev/null
+    fi
     exit 0 ;;
   send-keys)
     shift
@@ -82,9 +99,21 @@ case "${1:-}" in
         -l) lit=1 ;;
         Enter)
           printf '[ENTER]\n' >> "$SENT"
+          pending_file="${FM_FAKE_TMUX_PENDING_FILE:-$SENT.pending}"
+          cmdfile="${FM_FAKE_TMUX_COMMAND_FILE:-$SENT.command}"
+          pending=""
+          [ -f "$pending_file" ] && pending=$(cat "$pending_file")
+          case "$pending" in
+            /exit|/quit) printf 'bash\n' > "$cmdfile" ;;
+            *"claude --dangerously-skip-permissions"*) printf 'claude\n' > "$cmdfile" ;;
+            *" codex "*|codex\ *) printf 'codex\n' > "$cmdfile" ;;
+            *" opencode "*|opencode\ *) printf 'opencode\n' > "$cmdfile" ;;
+            *" pi "*|pi\ *) printf 'pi\n' > "$cmdfile" ;;
+            *" grok "*|grok\ *) printf 'grok\n' > "$cmdfile" ;;
+          esac
           [ "${FM_FAKE_TMUX_KEEP_PENDING:-0}" = 1 ] || printf '│ > │\n' > "$CAPTURE"
           ;;
-        C-q|C-c|Escape)
+        C-q|C-c|C-u|Escape)
           printf '[%s]\n' "$1" >> "$SENT"
           ;;
         *)
@@ -92,6 +121,7 @@ case "${1:-}" in
             text=$1
             printf '%s\n' "$text" >> "$SENT"
             printf '│ > %s │\n' "$text" > "$CAPTURE"
+            printf '%s' "$text" > "${FM_FAKE_TMUX_PENDING_FILE:-$SENT.pending}"
           else
             printf '%s\n' "$1" >> "$SENT"
           fi
@@ -127,9 +157,30 @@ test_claude_context_parser_fixture() {
   [ "$out" = 89 ] || fail "Claude fixture footer parsed as '$out', expected 89"
   out=$(printf 'coverage 89%%\n' | fm_context_parse_claude_fullness)
   [ -z "$out" ] || fail "ordinary percentage text should not parse as Claude context"
+  out=$(printf 'Downloading model ██████████ 100%%\n' | fm_context_parse_claude_fullness)
+  [ -z "$out" ] || fail "non-statusline progress bars should not parse as Claude context"
   out=$(printf 'Codex footer 31%% context left\n' | fm_context_parse_fullness_for_harness codex || true)
   [ -z "$out" ] || fail "Codex context format should stay unsupported until verified"
   pass "context parser reads the verified Claude footer fixture and ignores unverified Codex text"
+}
+
+test_current_claude_busy_spinner_fixture() {
+  local out
+  out=$(printf '%s\n' \
+    'Tip: press # to remember' \
+    '✢ Pondering… (7s · thinking with xhigh effort)' \
+    '                                                              ◉ xhigh · /effort' \
+    '────────────────────────────────────────────────────────────────────────────────' \
+    '❯ ' \
+    '────────────────────────────────────────────────────────────────────────────────' \
+    '  Fable 5 │ firstmate' \
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents' \
+    | bash -c '. "$1/bin/fm-tmux-lib.sh"; fm_capture_has_busy_signature' _ "$ROOT"; printf '%s' "$?")
+  [ "$out" = 0 ] || fail "current Claude spinner fixture was not detected as busy"
+  out=$(printf '%s\n' '✢ Transfiguring… (15s · ↓ 148 tokens)' \
+    | bash -c '. "$1/bin/fm-tmux-lib.sh"; fm_capture_has_busy_signature' _ "$ROOT"; printf '%s' "$?")
+  [ "$out" = 0 ] || fail "current Claude token spinner fixture was not detected as busy"
+  pass "busy predicate detects current Claude Code spinner rows outside the footer tail"
 }
 
 test_crew_state_includes_context_when_available() {
@@ -155,6 +206,41 @@ SH
   out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" "$CREW_STATE" task)
   assert_contains "$out" "context: 89%" "crew-state did not append context telemetry"
   pass "fm-crew-state appends context telemetry when a verified Claude footer is visible"
+}
+
+test_crew_state_detects_current_claude_busy_spinner() {
+  local dir state fakebin wt out capture
+  dir="$TMP_ROOT/crew-state-claude-busy"; state="$dir/state"; fakebin="$dir/fakebin"; wt="$dir/wt"; capture="$dir/pane.txt"
+  mkdir -p "$state" "$fakebin"
+  make_git_worktree "$wt"
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  display-message) printf '%%1\n'; exit 0 ;;
+  capture-pane) cat "${FM_FAKE_TMUX_CAPTURE:?}"; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/no-mistakes" "$fakebin/tmux"
+  printf '%s\n' \
+    'Tip: press # to remember' \
+    '✢ Pondering… (7s · thinking with xhigh effort)' \
+    '                                                              ◉ xhigh · /effort' \
+    '────────────────────────────────────────────────────────────────────────────────' \
+    '❯ ' \
+    '────────────────────────────────────────────────────────────────────────────────' \
+    '  Fable 5 │ firstmate' \
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents' > "$capture"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "kind=ship" "harness=claude"
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_CAPTURE="$capture" "$CREW_STATE" task)
+  assert_contains "$out" "state: working" "crew-state did not report current Claude spinner as working"
+  assert_contains "$out" "source: pane" "crew-state did not attribute current Claude spinner to pane busy state"
+  pass "fm-crew-state detects the current Claude Code spinner as a busy pane"
 }
 
 test_watcher_rotation_due_on_turn_boundary() {
@@ -206,6 +292,21 @@ test_watcher_rotation_suppresses_same_signature() {
   grep -Fx "rotation-due: task 89%" "$out" >/dev/null && fail "rotation-due repeated for the same signal signature"
   grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "suppressed rotation should fall through to normal signal handling"
   pass "rotation-due suppresses repeats until the turn-boundary signature changes"
+}
+
+test_watcher_skips_rotation_due_for_unsupported_backend() {
+  local dir state fakebin out capture pid
+  dir=$(make_case rotation-unsupported-backend); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+  printf 'idle\nFable 5 │ fusor ████████░░ 89%%\n' > "$capture"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "backend=zellij" "kind=ship" "harness=claude"
+  : > "$state/task.turn-ended"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle'
+  watch_case_bg "$state" "$fakebin" "$out" "$capture"
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher should surface unsupported-backend turn-ended as a normal signal"
+  grep -Fx "rotation-due: task 89%" "$out" >/dev/null && fail "unsupported backend emitted a doomed rotation-due wake"
+  grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "unsupported backend turn-ended did not fall through to signal handling"
+  pass "watcher does not emit rotation-due for backends fm-rotate cannot relaunch"
 }
 
 test_watcher_terminal_signal_wins_over_rotation() {
@@ -320,6 +421,38 @@ test_rotate_refuses_dirty_after_committed_handoff() {
   assert_contains "$out" "uncommitted changes after handoff wait" "dirty rotate with handoff did not explain refusal"
   grep -F "/exit" "$sent" >/dev/null && fail "dirty rotate with handoff exited before refusing dirty worktree"
   pass "fm-rotate refuses dirty work before relaunch"
+}
+
+test_rotate_refuses_current_claude_busy_spinner_before_exit() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-claude-busy"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '%s\n' \
+    'Tip: press # to remember' \
+    '✢ Pondering… (7s · thinking with xhigh effort)' \
+    '                                                              ◉ xhigh · /effort' \
+    '────────────────────────────────────────────────────────────────────────────────' \
+    '❯ ' \
+    '────────────────────────────────────────────────────────────────────────────────' \
+    '  Fable 5 │ firstmate' \
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents' > "$cap"
+  : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CURSOR_Y=4 FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "rotate should refuse visible Claude busy spinner, got $status: $out"
+  assert_contains "$out" "busy signature" "rotate did not explain the busy-spinner refusal"
+  assert_not_contains "$(cat "$sent")" "/exit" "rotate sent /exit while the current Claude spinner was visible"
+  pass "fm-rotate refuses to exit a pane showing the current Claude busy spinner"
 }
 
 test_rotate_accepts_explicit_generic_handoff() {
@@ -450,6 +583,25 @@ test_rotate_refuses_unsupported_shell_ready_before_exit() {
   pass "fm-rotate refuses unsupported shell-readiness backends before exit"
 }
 
+test_rotate_refuses_unsupported_backend_before_handoff_request() {
+  local dir state data wt status out sent
+  dir="$TMP_ROOT/rotate-zellij-unsupported-no-handoff"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  fm_write_meta "$state/task.meta" "window=zellij-session:pane-task" "backend=zellij" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  : > "$sent"
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_FAKE_ZELLIJ_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "unsupported backend without handoff should fail before request, got $status: $out"
+  assert_contains "$out" "shell readiness cannot be verified" "unsupported backend refusal was not clear"
+  [ ! -s "$sent" ] || fail "unsupported backend received a handoff or exit send before refusal: $(cat "$sent")"
+  [ ! -e "$data/task/rotation-prompt.md" ] || fail "unsupported backend wrote a continuation prompt before refusal"
+  pass "fm-rotate refuses unsupported backends before requesting a handoff"
+}
+
 test_rotate_refuses_unconfirmed_exit_submit() {
   local dir state data wt fakebin sent cap status out
   dir="$TMP_ROOT/rotate-unconfirmed-exit"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
@@ -470,6 +622,7 @@ test_rotate_refuses_unconfirmed_exit_submit() {
   [ "$status" -eq 1 ] || fail "rotate should refuse unconfirmed exit submit, got $status: $out"
   assert_contains "$out" "not confirmed empty" "rotate did not explain unconfirmed exit submit"
   grep -F "export GOTMPDIR" "$sent" >/dev/null && fail "rotate continued with shell commands after unconfirmed exit"
+  assert_contains "$(cat "$sent")" "[C-u]" "rotate did not try to clear the unsubmitted exit text after a failed submit"
   pass "fm-rotate refuses to relaunch after an unconfirmed exit submit"
 }
 
@@ -551,9 +704,9 @@ test_rotate_relaunches_same_worktree_with_committed_handoff() {
   pass "fm-rotate exits and relaunches in the same worktree after a committed handoff"
 }
 
-test_rotate_secondmate_codex_omits_parent_turnend_notify() {
-  local dir state data wt fakebin sent cap out launch
-  dir="$TMP_ROOT/rotate-secondmate-codex"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+test_rotate_refuses_secondmate_parent_side() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-secondmate-refuse"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
   mkdir -p "$state" "$data"
   make_git_worktree "$wt"
   mkdir -p "$wt/docs"
@@ -564,55 +717,40 @@ test_rotate_secondmate_codex_omits_parent_turnend_notify() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=codex" "kind=secondmate" "mode=secondmate" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
-  assert_contains "$out" "rotated task" "secondmate codex rotate did not report success"
-  launch=$(grep -F "codex " "$sent" | tail -n 1)
-  assert_contains "$launch" "FM_HOME='$wt' codex" "secondmate codex rotate did not relaunch inside the secondmate home"
-  assert_not_contains "$launch" "notify=" "secondmate codex rotate must not install the parent turn-end notify hook"
-  pass "fm-rotate preserves the secondmate Codex launch template"
-}
-
-test_rotate_secondmate_pi_omits_parent_turnend_extension() {
-  local dir state data wt fakebin sent cap out launch
-  dir="$TMP_ROOT/rotate-secondmate-pi"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
-  mkdir -p "$state" "$data"
-  make_git_worktree "$wt"
-  mkdir -p "$wt/docs"
-  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
-  git -C "$wt" add docs/firstmate-handoff-task.md
-  git -C "$wt" commit -qm handoff
-  fakebin=$(make_rotate_fakebin "$dir")
-  printf '│ > │\n' > "$cap"; : > "$sent"
-  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=pi" "kind=secondmate" "mode=secondmate" "tasktmp=$dir/tmp"
-  touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
-  assert_contains "$out" "rotated task" "secondmate pi rotate did not report success"
-  launch=$(grep -F " pi " "$sent" | tail -n 1)
-  assert_contains "$launch" "FM_HOME='$wt' pi" "secondmate pi rotate did not relaunch inside the secondmate home"
-  assert_not_contains "$launch" " -e " "secondmate pi rotate must not install the parent turn-end extension"
-  [ ! -e "$state/task.pi-ext.ts" ] || fail "secondmate pi rotate wrote an unused parent turn-end extension"
-  pass "fm-rotate preserves the secondmate Pi launch template"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "secondmate parent-side rotate should refuse, got $status: $out"
+  assert_contains "$out" "kind=secondmate" "secondmate refusal did not explain the unsupported contract"
+  assert_not_contains "$(cat "$sent")" "/quit" "secondmate refusal should happen before exit"
+  [ ! -e "$data/task/rotation-prompt.md" ] || fail "secondmate refusal should not write a continuation prompt"
+  pass "fm-rotate refuses parent-side secondmate rotation until a real secondmate stow contract exists"
 }
 
 test_claude_context_parser_fixture
+test_current_claude_busy_spinner_fixture
 test_crew_state_includes_context_when_available
+test_crew_state_detects_current_claude_busy_spinner
 test_watcher_rotation_due_on_turn_boundary
 test_watcher_rotation_never_mid_turn
 test_watcher_rotation_suppresses_same_signature
+test_watcher_skips_rotation_due_for_unsupported_backend
 test_watcher_terminal_signal_wins_over_rotation
 test_watcher_terminal_stale_wins_over_rotation
 test_rotate_requests_missing_handoff
 test_rotate_requests_handoff_before_dirty_refusal
 test_rotate_refuses_dirty_after_committed_handoff
+test_rotate_refuses_current_claude_busy_spinner_before_exit
 test_rotate_accepts_explicit_generic_handoff
 test_rotate_refuses_explicit_stale_handoff
 test_rotate_autodetects_marked_handoff
 test_rotate_ignores_autodetected_stale_handoff
 test_rotate_refuses_grok_orca_before_exit
 test_rotate_refuses_unsupported_shell_ready_before_exit
+test_rotate_refuses_unsupported_backend_before_handoff_request
 test_rotate_refuses_unconfirmed_exit_submit
 test_rotate_waits_for_verified_shell_before_relaunch
 test_rotate_waits_for_handoff_then_relaunches
 test_rotate_relaunches_same_worktree_with_committed_handoff
-test_rotate_secondmate_codex_omits_parent_turnend_notify
-test_rotate_secondmate_pi_omits_parent_turnend_extension
+test_rotate_refuses_secondmate_parent_side

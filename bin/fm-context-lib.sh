@@ -28,7 +28,7 @@ fm_context_threshold() {
 
 fm_context_parse_claude_fullness() {
   awk '
-    /[█░]/ && /%[[:space:]]*$/ {
+    /[█░]/ && /%[[:space:]]*$/ && (index($0, "│") || index($0, "|")) {
       line = $0
       sub(/%[[:space:]]*$/, "", line)
       sub(/.*[^0-9]/, "", line)

@@ -55,6 +55,8 @@ mkdir -p "$STATE"
 # see bin/fm-backend.sh and docs/herdr-backend.md.
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$SCRIPT_DIR/fm-tmux-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -110,12 +112,9 @@ CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
-# Busy signatures per harness, OR-ed. Extend via env when new adapters are verified.
-# claude/codex: "esc to interrupt"; opencode: "esc interrupt"; pi: "Working...";
-# grok: "Ctrl+c:cancel" (the mid-turn cancel hint in grok's keybind bar, shown iff a
-# turn is running; absent when idle - verified grok 0.2.73, ASCII to avoid the
-# locale fragility of matching grok's braille spinner glyph directly).
-BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
+# Busy signatures per harness, OR-ed. The default lives in fm-tmux-lib.sh so
+# fm-send/daemon/watcher/current-state reads share the same verified predicate.
+BUSY_REGEX=${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}
 # Always-on wake triage: most wakes during a long crew validation are benign (a
 # working: note or turn-end while a pipeline runs, a no-change heartbeat). Rather
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
@@ -178,7 +177,7 @@ window_is_busy() {  # <window> <tail40>
     busy) return 0 ;;
     idle) return 1 ;;
     *)
-      printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 | grep -qiE "$BUSY_REGEX"
+      printf '%s' "$tail40" | FM_BUSY_REGEX="$BUSY_REGEX" fm_capture_has_busy_signature
       ;;
   esac
 }
@@ -359,8 +358,21 @@ mark_rotation_seen() {  # <id> <pct> <signature>
 }
 
 rotation_due_reason() {  # <id> <signature>
-  local id=$1 sig=$2 pct
+  local id=$1 sig=$2 pct meta backend kind harness
   [ -n "$id" ] || return 1
+  meta="$STATE/$id.meta"
+  [ -f "$meta" ] || return 1
+  backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
+  kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
+  harness=$(fm_meta_get "$meta" harness 2>/dev/null || true)
+  [ -n "$backend" ] || backend=tmux
+  [ -n "$kind" ] || kind=ship
+  # Do not wake firstmate for sessions fm-rotate cannot safely relaunch.
+  # Unsupported backends would otherwise produce one doomed rotation wake per
+  # high-context boundary. Secondmate rotation needs its own stow contract.
+  case "$backend" in tmux|herdr) ;; *) return 1 ;; esac
+  [ "$kind" != secondmate ] || return 1
+  [ "$harness" = grok ] && [ "$backend" = orca ] && return 1
   pct=$(crew_context_percent "$id" "$STATE" 2>/dev/null || true)
   case "$pct" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pct" -ge "$ROTATE_THRESHOLD" ] || return 1
@@ -448,7 +460,7 @@ EOF
     if signal_reason_is_actionable $files; then
       signal_actionable=true
     fi
-    if ! afk_present; then
+    if ! afk_present && [ "$signal_actionable" != true ]; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         base=${f##*/}
@@ -457,8 +469,9 @@ EOF
           *) continue ;;
         esac
         # A high-context turn-end is rotation-actionable only after the crew is
-        # no longer provably working. This reuses the same current-state read as
-        # no-verb signal triage, so a busy footer or active run suppresses rotation.
+        # no longer provably working. Terminal/actionable signals have already
+        # won above, so rotation never adds a costly state read before surfacing
+        # a real status verb.
         crew_is_provably_working "$task" && continue
         rotation_sig="signal:$sig"
         rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
@@ -559,9 +572,9 @@ EOF
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
       # Busy match: a backend's native semantic state when available (herdr),
-      # else the last 6 non-blank lines only (the TUI footer area, where every
-      # verified harness renders its busy indicator) so busy-looking strings
-      # in displayed content cannot suppress stale detection.
+      # else the full bounded pane capture. Current Claude Code renders its
+      # busy spinner above the footer/status rows, so a footer-only tail is not
+      # a safe turn-boundary predicate.
       if [ "$n" -ge 2 ] && ! window_is_busy "$w" "$tail40"; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
         # firstmate. Detection itself is unchanged from above.
@@ -633,6 +646,7 @@ EOF
               if [ -n "$rotation_reason" ]; then
                 rotation_pct=${rotation_reason##* }
                 rotation_pct=${rotation_pct%%%}
+                fm_wake_append stale "$w" "stale: $w" || exit 1
                 fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
                 printf '%s' "$h" > "$sf"
                 rm -f "$ssf"

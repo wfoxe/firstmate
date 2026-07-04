@@ -69,8 +69,10 @@ SEP=' · '
 emit() {  # <state> <source> [detail]
   local line="state: $1${SEP}source: $2" pct
   [ -n "${3:-}" ] && line="$line${SEP}$3"
-  pct=$(fm_context_percent_from_meta "$META" "$STATE" 2>/dev/null || true)
-  [ -n "$pct" ] && line="$line${SEP}context: ${pct}%"
+  if [ "${FM_CREW_STATE_CONTEXT:-1}" != 0 ]; then
+    pct=$(fm_context_percent_from_meta "$META" "$STATE" 2>/dev/null || true)
+    [ -n "$pct" ] && line="$line${SEP}context: ${pct}%"
+  fi
   printf '%s\n' "$line"
   exit 0
 }
@@ -175,8 +177,7 @@ crew_pane_is_busy() {  # <target>
         busy) return 0 ;;
         *)
           tail40=$(fm_backend_capture "$TASK_BACKEND" "$1" 40 "$EXPECTED_LABEL" 2>/dev/null) || return 1
-          printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
-            | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+          printf '%s' "$tail40" | fm_capture_has_busy_signature
           ;;
       esac
       ;;

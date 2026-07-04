@@ -696,9 +696,11 @@ On wake, in order of cheapness:
    If the pane is waiting, looping, confused, or unresponsive, load `stuck-crewmate-recovery`.
 4. `check:` a per-task poll fired (usually a merge, or X mode when enabled); act on it.
 5. `rotation-due:` a crew reached `FM_ROTATE_THRESHOLD` context fullness (default 70) at a turn boundary and is not showing a busy/provably-working signal.
-   Rotate softly: run `bin/fm-rotate.sh <id>`.
-   If no committed handoff/stow doc exists yet, the script asks the crew to create one and waits for that committed artifact plus a non-busy boundary before exiting the old harness and relaunching a fresh session in the same endpoint, worktree, and branch.
-   Set `FM_ROTATE_WAIT_SECS=0` only when you deliberately want request-now/rerun-later behavior.
+   Rotate softly without blocking supervision: run `FM_ROTATE_WAIT_SECS=0 bin/fm-rotate.sh <id>`.
+   If no committed handoff/stow doc exists yet, the script asks the crew to create one and exits `3`; re-arm supervision, then re-run the same command after the crew reports that the handoff is committed.
+   If a committed handoff already exists, the script verifies a clean worktree, an empty composer, and a fresh pane capture with no busy signature before exiting the old harness and relaunching a fresh session in the same endpoint, worktree, and branch.
+   Use a positive `FM_ROTATE_WAIT_SECS` only when running `fm-rotate.sh` as its own harness-tracked background task so other watcher wakes can interleave.
+   If rotation is refused, treat the wake like `stale:`: peek the pane and diagnose rather than letting a stopped crew go quiet.
 6. `heartbeat:` a heartbeat wake now reaches you only when the watcher's bash fleet-scan caught a captain-relevant status the per-wake path missed (no-change heartbeats are absorbed in bash, never surfaced), so treat it as "something turned up" and review the whole fleet: read each crewmate's current state with `bin/fm-crew-state.sh <id>` (the cheap first read - it reconciles the authoritative run-step over a possibly-stale status-log line, so a crewmate whose gate you already resolved no longer reads as still parked), peek panes that look off, check PR-ready tasks for merge, reconcile data/backlog.md, then re-arm the watcher.
    Do not report that the fleet is unchanged.
 
