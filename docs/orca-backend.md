@@ -28,7 +28,7 @@ You do not need to open the app for routine supervision: `bin/fm-peek.sh fm-<id>
 
 Verify it works by spawning a trivial task with `--backend orca` and confirming the task's meta records `backend=orca`, `terminal=`, `orca_worktree_id=`, and `worktree=`; the Orca app should show a new terminal for the task.
 
-Limitations: `--secondmate` spawns refuse `backend=orca` (secondmate-home semantics need a separate design), Escape is unsupported, Orca is macOS-only and explicit-only, and it exposes no stable CLI version marker, so spawn gates on runtime reachability instead of a version floor - see "Limitations" below for the complete list.
+Limitations: `--secondmate` spawns refuse `backend=orca` (secondmate-home semantics need a separate design), Escape is unsupported, soft context rotation cannot relaunch Orca tasks yet, Orca is macOS-only and explicit-only, and it exposes no stable CLI version marker, so spawn gates on runtime reachability instead of a version floor - see "Limitations" below for the complete list.
 
 ## Status
 
@@ -94,6 +94,7 @@ Teardown:
 
 - `--secondmate` spawns still refuse `backend=orca`; secondmate-home semantics need a separate design.
 - Escape is unsupported because the current Orca terminal send primitive exposes Enter and interrupt-style input but no verified Escape operation.
+- Soft context rotation cannot relaunch Orca tasks yet. `fm-rotate.sh` requires a passive, verified shell-readiness check after the old harness exits, and the Orca adapter does not expose one.
 - Orca is explicit-only and is not selected by runtime auto-detection.
 - Orca currently exposes no stable CLI version or protocol marker. Unlike the herdr/zellij docs, this backend intentionally gates spawn support on runtime reachability from `orca status --json` rather than a version floor.
 
