@@ -163,7 +163,7 @@ Concise replies stay single unnumbered tweets; genuinely long replies are split 
 If an image is attached to a split reply, the relay puts it on the first/opener tweet only and leaves later chunks text-only.
 For preview testing, `FMX_DRY_RUN` makes `fm-x-reply.sh` and `fm-x-dismiss.sh` skip the public post or dismiss call and record the would-be payload under `state/x-outbox/`, including `texts` when the reply would be a thread and an `endpoint` marker when the preview is a completion follow-up or dismiss, while the rest of the poll -> compose -> would-post loop still succeeds.
 Attached images are recorded as compact `{media_type, bytes, source_path}` metadata in dry-run instead of base64 bytes.
-The watcher, wake queue, arm wrapper, and afk daemon are unchanged; X mode is layered on top through the existing check mechanism.
+The watcher, wake queue, arm wrapper, and afk daemon remain the supervision layer; X mode is layered on top through the existing check mechanism.
 
 ## Project memory belongs to projects
 
