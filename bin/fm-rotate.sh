@@ -78,13 +78,6 @@ worktree_dirty_line() {
   git -C "$WT" status --porcelain 2>/dev/null | grep -vE '^\?\? (\.claude/|\.fm-grok-turnend$)' | head -1 || true
 }
 
-dirty=$(worktree_dirty_line)
-if [ -n "$dirty" ]; then
-  echo "REFUSED: worktree $WT has uncommitted changes." >&2
-  echo "Commit or discard them before rotating; a rotation must not strand un-stowed work." >&2
-  exit 1
-fi
-
 shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"

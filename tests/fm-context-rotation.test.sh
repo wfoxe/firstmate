@@ -268,6 +268,50 @@ test_rotate_requests_missing_handoff() {
   pass "fm-rotate can request a committed handoff and return without waiting"
 }
 
+test_rotate_requests_handoff_before_dirty_refusal() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-dirty-missing"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  printf 'uncommitted task work\n' >> "$wt/README.md"
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_ROTATE_WAIT_SECS=0 FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 3 ] || fail "dirty rotate without handoff should request and exit 3, got $status: $out"
+  assert_contains "$(cat "$sent")" "Context rotation is due" "dirty rotate without handoff did not request a handoff"
+  assert_not_contains "$out" "REFUSED: worktree" "dirty rotate without handoff refused before requesting handoff"
+  pass "fm-rotate requests a handoff before dirty refusal"
+}
+
+test_rotate_refuses_dirty_after_committed_handoff() {
+  local dir state data wt fakebin sent cap status out
+  dir="$TMP_ROOT/rotate-dirty-ready"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  printf 'uncommitted task work\n' >> "$wt/README.md"
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  set +e
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task 2>&1)
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "dirty rotate with handoff should refuse before relaunch, got $status: $out"
+  assert_contains "$out" "uncommitted changes after handoff wait" "dirty rotate with handoff did not explain refusal"
+  grep -F "/exit" "$sent" >/dev/null && fail "dirty rotate with handoff exited before refusing dirty worktree"
+  pass "fm-rotate refuses dirty work before relaunch"
+}
+
 test_rotate_accepts_explicit_generic_handoff() {
   local dir state data wt fakebin sent cap out
   dir="$TMP_ROOT/rotate-explicit"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"
@@ -450,6 +494,8 @@ test_watcher_rotation_suppresses_same_signature
 test_watcher_terminal_signal_wins_over_rotation
 test_watcher_terminal_stale_wins_over_rotation
 test_rotate_requests_missing_handoff
+test_rotate_requests_handoff_before_dirty_refusal
+test_rotate_refuses_dirty_after_committed_handoff
 test_rotate_accepts_explicit_generic_handoff
 test_rotate_autodetects_marked_handoff
 test_rotate_refuses_grok_orca_before_exit
