@@ -79,17 +79,19 @@ opencode, pi, and grok).
 ## Busy-guard and composer guard
 
 The daemon never injects into an in-use pane. Two checks run before every
-injection (shared with `fm-send.sh` via `bin/fm-tmux-lib.sh`):
+injection, using the supervisor pane's runtime backend:
 
 - **`pane_is_busy`** - the harness shows a busy footer (agent mid-turn).
 - **`pane_input_pending`** - the cursor line holds real unsubmitted text (a
   human's half-typed line, or a previous injection whose Enter was swallowed).
-  The detector **strips the harness's composer box borders first**, so an idle
-  *bordered* composer (claude draws `│ > … │`) is correctly read as empty, not
-  pending. Without this, every idle claude pane looked like pending input and
-  the daemon deferred 100% of escalations (incident afk-invx-i5).
+  On tmux, the detector **strips the harness's composer box borders first**, so
+  an idle *bordered* composer (claude draws `│ > … │`) is correctly read as
+  empty, not pending. Without this, every idle claude pane looked like pending
+  input and the daemon deferred 100% of escalations (incident afk-invx-i5).
   `FM_COMPOSER_IDLE_RE` still overrides empty-composer matching after border
-  stripping.
+  stripping. On herdr, the daemon uses the herdr adapter's structural
+  composer-row reader (`fm_backend_herdr_composer_state`), the same machinery
+  that verifies `fm-send.sh` submissions.
 
 Either condition defers the injection; the buffered escalation survives in
 `state/.subsuper-escalations` and is retried on the next housekeeping tick. In
@@ -103,18 +105,23 @@ attempts one normal flush, which still requires an idle pane and empty composer.
 If that submit cannot be confirmed, it raises a loud, rate-limited wedge alarm:
 an ERROR in the daemon log, a durable
 `state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
-catch-up if present), and a flash on the supervisor client's status line.
-So a guard false-positive becomes a visible stall, never an unbounded silent no-op.
+catch-up if present), and a best-effort supervisor-client alert (tmux status-line
+flash; herdr notification). So a guard false-positive becomes a visible stall,
+never an unbounded silent no-op.
 
 ## Submit model
 
-The digest is typed **once** via `send-keys -l`, then submitted with Enter and
+The digest is typed **once** through the supervisor backend's literal-send path
+(tmux `send-keys -l`, herdr `pane send-text`), then submitted with Enter and
 **verified**: Enter is retried (Enter only, never a retype) until the composer
 clears.
 A submit "landed" only when the composer is confirmed empty afterward, using
-the same corrected, border-aware detector as the composer guard.
+the same corrected detector as the composer guard.
 A bordered-empty claude composer is recognized as submitted rather than
 mistaken for a swallowed Enter.
+On herdr, a parked slash/autocomplete composer that still contains argument
+placeholder text is recognized as pending, so the daemon retries Enter instead
+of assuming delivery.
 `fm-send.sh` uses the same primitive and exits non-zero
 when a steer's Enter is positively swallowed, so firstmate learns an instruction
 did not land instead of leaving it unsubmitted.
@@ -167,26 +174,27 @@ the marker lets firstmate distinguish it from a real captain message.
   mid-typing or previous injection with swallowed Enter). Either condition
   defers injection and preserves the buffer for retry. The daemon never merges
   its digest into the captain's half-typed line.
-- The composer detector, shared with `fm-send.sh` in `bin/fm-tmux-lib.sh`, drops
-  dim/faint ghost text, then strips harness composer box borders, so a ghost-only
-  or idle bordered composer such as claude's `│ > ... │` reads as empty, not
-  pending. Without these filters, idle bordered composers and dim ghost
-  suggestions can look like pending input and stall supervision. `FM_COMPOSER_IDLE_RE`
-  still overrides empty-composer matching after dim-ghost and border stripping,
-  and `FM_BUSY_REGEX` overrides busy footers.
+- On the tmux path, the composer detector shared with `fm-send.sh` in
+  `bin/fm-tmux-lib.sh` drops dim/faint ghost text, then strips harness composer
+  box borders, so a ghost-only or idle bordered composer such as claude's
+  `│ > ... │` reads as empty, not pending. Without these filters, idle bordered
+  composers and dim ghost suggestions can look like pending input and stall supervision.
+  `FM_COMPOSER_IDLE_RE` still overrides empty-composer matching after dim-ghost
+  and border stripping, and `FM_BUSY_REGEX` overrides busy footers. On herdr,
+  the daemon uses `bin/backends/herdr.sh`'s structural composer-state scanner.
 - **Max-defer escape** - the daemon must never silently wedge. If anything stays
   buffered past `FM_MAX_DEFER_SECS` (default 300s), the daemon attempts one
   normal flush, which still requires an idle pane and empty composer. If that
   cannot confirm a submit, it raises a loud, rate-limited wedge alarm: ERROR log,
-  durable `state/.subsuper-inject-wedged` marker, and a status-line flash. A
-  composer false-positive surfaces as a visible stall, never an unbounded silent
-  no-op.
+  durable `state/.subsuper-inject-wedged` marker, and a supervisor-client alert
+  (tmux status-line flash; herdr notification). A composer false-positive
+  surfaces as a visible stall, never an unbounded silent no-op.
 - **Verified type-once submit model** - the digest is typed once via
-  `send-keys -l`, then submitted with Enter and verified. Enter is retried,
-  Enter only and never a retype, until the composer is confirmed empty. That
-  empty composer is the acknowledgement that the submit landed, using the same
-  dim-ghost-aware and border-aware detector so a ghost-only or bordered-empty
-  claude composer counts as submitted rather than a false swallowed Enter.
+  the backend literal-send path, then submitted with Enter and verified. Enter
+  is retried, Enter only and never a retype, until the composer is confirmed
+  empty. That empty composer is the acknowledgement that the submit landed,
+  using the tmux dim-ghost/border-aware detector or herdr structural composer
+  scanner as appropriate.
 - **Marker strip** - `strip_injection_marker` removes the sentinel prefix before
   classification or relay, so the digest text firstmate sees is clean.
 - **Portable singleton lock** - the daemon uses the repo's portable lock helper
@@ -194,10 +202,15 @@ the marker lets firstmate distinguish it from a real captain message.
 - **Dedupe across signal/stale/scan** - `classify_signal` and `classify_stale`
   both check the seen-status marker before escalating, so a status escalated by
   one path is not re-escalated by another in the same digest.
-- **Auto-discovered supervisor pane** - the daemon resolves its injection target
-  from `FM_SUPERVISOR_TARGET`, then `$TMUX_PANE`, then a `firstmate:0` fallback
-  with a warning. The resolution source is logged at startup so a
-  wrong-but-resolving fallback is detectable.
+- **Auto-discovered supervisor pane** - the daemon resolves its injection backend
+  from `FM_SUPERVISOR_BACKEND`, explicit target shape (a herdr-shaped
+  `FM_SUPERVISOR_TARGET` selects herdr; other explicit targets select tmux),
+  runtime detection (`$TMUX` wins over `HERDR_ENV=1`, matching
+  `bin/fm-backend.sh`), then tmux fallback. It resolves the target from
+  `FM_SUPERVISOR_TARGET`; for tmux, `$TMUX_PANE` then `firstmate:0`; for herdr,
+  `${HERDR_SESSION:-default}:$HERDR_PANE_ID`. The backend, target, and
+  resolution source are logged at startup so a wrong-but-resolving fallback is
+  detectable.
 
 ## Reliability properties
 

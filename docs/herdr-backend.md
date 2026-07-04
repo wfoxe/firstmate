@@ -50,6 +50,24 @@ Only when none of that resolves anything does firstmate fall back to the hard de
 Absent `backend=` in a task's meta always means `tmux`; a herdr task carries an explicit `backend=herdr` line, while other experimental adapters carry their own backend values.
 A herdr spawn refuses loudly if `herdr` or `jq` is missing, or if the installed herdr's protocol is older than the verified minimum (`fm_backend_herdr_version_check`).
 
+## Captain-facing compatibility audit
+
+The audit below is for the case where firstmate itself is running natively inside herdr (`HERDR_ENV=1`) and no tmux server exists.
+
+| Capability | Herdr status | Notes |
+| --- | --- | --- |
+| `/afk` away-mode daemon | Supported | `bin/fm-supervise-daemon.sh` now resolves a supervisor backend separately from task metadata: `FM_SUPERVISOR_BACKEND` override, explicit target shape (herdr-shaped `FM_SUPERVISOR_TARGET` selects herdr; other explicit targets select tmux), runtime detection from `$TMUX`/`HERDR_ENV=1`, then tmux fallback. On herdr it targets `${HERDR_SESSION:-default}:$HERDR_PANE_ID` unless `FM_SUPERVISOR_TARGET` is set. Escalations go through `fm_backend_send_text_submit herdr`, preserving the sentinel marker, single-line digest, type-once/Enter-retry model, and strict "composer empty" acknowledgement. A `pending`, `unknown`, or `send-failed` verdict preserves the buffer for retry/max-defer instead of assuming delivery. |
+| Herdr parked-composer submit verification | Supported | The daemon uses the herdr adapter's `fm_backend_herdr_composer_state` path through `fm_backend_send_text_submit`, so the known popup/placeholder failure mode is detected as `pending` and retried with Enter only. This is the same fix used by `fm-send.sh`; see "Incident (2026-07-03)" and "Composer verification" below. |
+| `/updatefirstmate` | Supported | `bin/fm-update.sh` is git-only; live secondmate nudges are sent with `bin/fm-send.sh`, which routes by each target's recorded backend. No tmux server is required for herdr-backed secondmates. |
+| `/stow` | Supported | The skill writes curated memory/backlog/project knowledge according to AGENTS.md routing and does not touch a session-provider backend. |
+| Watcher chain (`fm-watch-arm.sh`, `fm-watch.sh`, wake drain, guard) | Supported | The watcher uses recorded task metadata plus `fm_backend_capture`, `fm_backend_busy_state`, and `fm_backend_target_exists`; while `state/.afk` exists it reverts to daemon-owned one-shot behavior. `fm-watch-arm.sh` is a process/lock wrapper, not a tmux wrapper. |
+| `fm-send.sh` / `fm-peek.sh` | Supported | Both resolve `fm-<id>` through metadata and dispatch capture/send/key operations through `fm-backend.sh`; herdr send uses structural composer-state verification. |
+| `fm-spawn.sh` | Supported | New task backend selection uses `--backend`, `FM_BACKEND`, `config/backend`, runtime detection from `$TMUX`/`HERDR_ENV=1`, then tmux fallback. A native herdr firstmate with no explicit setting auto-selects herdr. |
+| `fm-teardown.sh` | Supported | Teardown reads task metadata, enforces landed-work safety, then closes the recorded endpoint through `fm_backend_kill`; herdr closes the recorded pane/tab. |
+| Session-start endpoint liveness | Supported | `fm_backend_target_exists herdr` now uses the adapter's verified `--session` targeting (`fm_backend_herdr_cli`) for passive `pane get` checks, without auto-starting a server. |
+| X-mode scripts | Supported for the checked path | X mode rides `state/*.check.sh` and the normal watcher; no tmux-only session operation was found in the cheap audit. Away-mode cadence is still the daemon's own cadence while `state/.afk` exists. |
+| Supervisor injection on zellij/orca | Not implemented | This pass scoped supervisor injection to tmux and herdr because those are the runtime surfaces `fm_backend_detect` can identify today. zellij/orca remain task backends only for `/afk` supervisor injection unless an explicit future runtime marker and composer verification path are added. |
+
 ## Worktree provider stays treehouse
 
 Herdr is a session provider only.

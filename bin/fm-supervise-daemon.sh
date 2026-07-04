@@ -56,9 +56,16 @@
 # Usage: fm-supervise-daemon.sh
 #          Long-lived background loop. Normally started by the /afk skill, which
 #          sets state/.afk first. Env knobs:
-#          FM_SUPERVISOR_TARGET     supervisor tmux target (override; otherwise
-#                                   auto-discovered from TMUX_PANE, then
-#                                   firstmate:0 fallback)
+#          FM_SUPERVISOR_TARGET     supervisor target override. tmux targets
+#                                   use tmux syntax; herdr targets use
+#                                   <session>:<pane-id> (e.g. default:w1:p2).
+#                                   Without an override, tmux auto-discovers
+#                                   from TMUX_PANE then firstmate:0 fallback;
+#                                   herdr auto-discovers from HERDR_PANE_ID and
+#                                   HERDR_SESSION/default when HERDR_ENV=1.
+#          FM_SUPERVISOR_BACKEND    optional supervisor injection backend
+#                                   override (tmux|herdr). Normally detected
+#                                   from TMUX/HERDR_ENV like fm-backend.sh.
 #          FM_INJECT_SKIP           |-prefixes force-self-handle bypassing
 #                                   classification (default "heartbeat"); empty
 #                                   disables. Use sparingly: it overrides the
@@ -103,10 +110,12 @@ FM_DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$FM_DAEMON_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
-# Shared tmux pane primitives for supervisor injection (busy/composer detection
-# + verify-retry submit). Sourced at top level so BOTH the executed daemon and
-# the unit tests (which source this file for its pure functions) get the
-# corrected composer detection. Stale task rechecks use fm-backend.sh below.
+# Shared tmux pane primitives for tmux supervisor injection
+# (busy/composer detection + verify-retry submit). Sourced at top level so BOTH
+# the executed daemon and the unit tests (which source this file for its pure
+# functions) get the corrected tmux composer detection. Herdr supervisor
+# injection routes through fm-backend.sh and bin/backends/herdr.sh below. Stale
+# task rechecks also use fm-backend.sh.
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$FM_DAEMON_DIR/fm-tmux-lib.sh"
 
@@ -122,6 +131,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # --- tunables ---------------------------------------------------------------
 FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
+FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 INJECT_SKIP_DEFAULT="heartbeat"
 STALE_ESCALATE_SECS_DEFAULT=240
 ESCALATE_BATCH_SECS_DEFAULT=90
@@ -246,25 +256,111 @@ _collapse_newlines() {  # <text>
   printf '%s' "$s"
 }
 
-# Auto-discover the supervisor pane at startup. Priority:
-#   1. FM_SUPERVISOR_TARGET env (explicit override) — caller passes it in.
-#   2. $TMUX_PANE — tmux sets this in every pane's environment; inherited by
-#      the daemon when the /afk skill launches it from firstmate's own pane.
-#   3. firstmate:0 — legacy fallback (may not resolve if the session is named
-#      differently). The caller logs a warning in that case.
-# Returns the resolved target on stdout; returns 1 if only the fallback is left
-# AND the fallback does not resolve to a live pane.
-discover_supervisor_target() {
+# Auto-discover the supervisor endpoint at startup. The daemon injects into the
+# pane running firstmate itself, so this uses runtime markers (fm_backend_detect),
+# not the configured task-spawn backend (fm_backend_name).
+#
+# Backend priority:
+#   1. FM_SUPERVISOR_BACKEND (explicit override; tmux|herdr only).
+#   2. FM_SUPERVISOR_TARGET shape: a herdr-shaped target
+#      (<session>:<pane-id>, pane id itself containing a colon, e.g.
+#      default:w1:p2) selects herdr; any other explicit target selects tmux.
+#   3. Runtime auto-detection from $TMUX / HERDR_ENV=1, matching fm-backend.sh.
+#   4. tmux legacy fallback.
+#
+# Target priority:
+#   1. FM_SUPERVISOR_TARGET env (explicit override).
+#   2. tmux: $TMUX_PANE, then firstmate:0 fallback.
+#   3. herdr: HERDR_PANE_ID with HERDR_SESSION/default.
+#
+# discover_supervisor_endpoint prints:
+#   <backend>\t<target>\t<source>
+# It returns non-zero for fallback/unresolved cases so callers can warn or error,
+# but still prints the best endpoint it could derive when one exists.
+supervisor_target_looks_herdr() {  # <target>
+  case "$1" in
+    *:*:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_backend_supported() {  # <backend>
+  case "$1" in
+    tmux|herdr) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+discover_supervisor_backend() {
+  local detected
+  if [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
+    supervisor_backend_supported "$FM_SUPERVISOR_BACKEND" || {
+      echo "error: unsupported FM_SUPERVISOR_BACKEND '$FM_SUPERVISOR_BACKEND' (supported: tmux herdr)" >&2
+      return 1
+    }
+    printf '%s' "$FM_SUPERVISOR_BACKEND"
+    return 0
+  fi
   if [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
-    printf '%s' "$FM_SUPERVISOR_TARGET"
+    if supervisor_target_looks_herdr "$FM_SUPERVISOR_TARGET"; then
+      printf 'herdr'
+    else
+      printf 'tmux'
+    fi
     return 0
   fi
-  if [ -n "${TMUX_PANE:-}" ]; then
-    printf '%s' "$TMUX_PANE"
+  if detected=$(fm_backend_detect); then
+    supervisor_backend_supported "$detected" || {
+      echo "error: runtime backend '$detected' is not supported for supervisor injection (supported: tmux herdr)" >&2
+      return 1
+    }
+    printf '%s' "$detected"
     return 0
   fi
-  printf '%s' "$FM_SUPERVISOR_TARGET_DEFAULT"
+  printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
+}
+
+discover_supervisor_endpoint() {
+  local backend session
+  backend=$(discover_supervisor_backend) || return 1
+  if [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
+    printf '%s\t%s\t%s' "$backend" "$FM_SUPERVISOR_TARGET" "FM_SUPERVISOR_TARGET"
+    return 0
+  fi
+  case "$backend" in
+    tmux)
+      if [ -n "${TMUX_PANE:-}" ]; then
+        printf '%s\t%s\t%s' "$backend" "$TMUX_PANE" "TMUX_PANE"
+        return 0
+      fi
+      printf '%s\t%s\t%s' "$backend" "$FM_SUPERVISOR_TARGET_DEFAULT" "FALLBACK(firstmate:0)"
+      return 1
+      ;;
+    herdr)
+      if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
+        session="${HERDR_SESSION:-default}"
+        printf '%s\t%s:%s\t%s' "$backend" "$session" "$HERDR_PANE_ID" "HERDR_PANE_ID"
+        return 0
+      fi
+      printf '%s\t\t%s' "$backend" "UNRESOLVED(herdr env missing HERDR_PANE_ID)"
+      return 1
+      ;;
+  esac
   return 1
+}
+
+# Backward-compatible helper for older tests and ad hoc sourcing: print only
+# the target portion, preserving the old fallback warning behavior.
+discover_supervisor_target() {
+  local endpoint backend target source
+  endpoint=$(discover_supervisor_endpoint) || true
+  IFS="$(printf '\t')" read -r backend target source <<EOF
+$endpoint
+EOF
+  [ -n "$target" ] || return 1
+  printf '%s' "$target"
+  [ "$source" = "FALLBACK(firstmate:0)" ] && return 1
+  return 0
 }
 
 # --- classification helpers (PURE: no side effects, testable) ---------------
@@ -399,9 +495,11 @@ mark_escalated_seen() {  # <kind> <arg> <state>
   esac
 }
 
-# Busy + composer-empty detection are the shared primitives in fm-tmux-lib.sh
-# (one source of truth with fm-send.sh). These thin wrappers keep the daemon's
-# call sites and the unit tests stable.
+# Busy + composer-empty detection are backend-aware for the supervisor pane.
+# The tmux path keeps using fm-tmux-lib.sh's cursor-row reader (one source of
+# truth with fm-send.sh's tmux adapter). The herdr path uses the same native
+# busy-state and structural composer-state machinery as bin/backends/herdr.sh's
+# send_text_submit verifier.
 #
 # pane_input_pending returns 0 (pending) when the cursor line holds real
 # unsubmitted text - a human's half-typed line (the return race) or a previous
@@ -409,8 +507,42 @@ mark_escalated_seen() {  # <kind> <arg> <state>
 # strips the harness's composer box borders, so a ghost-only or idle bordered
 # claude composer ("│ > … │") is correctly read as empty, not pending (incidents
 # afk-invx-i5 and composer-robust).
-pane_is_busy() { fm_pane_is_busy "$@"; }        # <window>
-pane_input_pending() { fm_pane_input_pending "$@"; }  # <target>
+supervisor_target_exists() {  # <backend> <target>
+  fm_backend_target_exists "$1" "$2" >/dev/null 2>&1
+}
+
+pane_is_busy() {  # <target> [backend=tmux]
+  local target=$1 backend=${2:-tmux} bs tail40
+  case "$backend" in
+    tmux) fm_pane_is_busy "$target" ;;
+    herdr)
+      bs=$(fm_backend_busy_state herdr "$target" 2>/dev/null)
+      case "$bs" in
+        busy) return 0 ;;
+        idle) return 1 ;;
+        *)
+          tail40=$(fm_backend_capture herdr "$target" 40 2>/dev/null) || return 1
+          printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
+            | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
+          ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+pane_input_pending() {  # <target> [backend=tmux]
+  local target=$1 backend=${2:-tmux} state
+  case "$backend" in
+    tmux) fm_pane_input_pending "$target" ;;
+    herdr)
+      fm_backend_source herdr >/dev/null 2>&1 || return 1
+      state=$(fm_backend_herdr_composer_state "$target")
+      [ "$state" = pending ]
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 task_window_backend() {  # <window> <state>
   local win=$1 state=$2 task meta
@@ -466,7 +598,7 @@ escalate_flush() {  # <state>
 # the supervisor client's status line. Nothing is lost — the buffer and the
 # wake-queue both survive — but the stall stops being invisible.
 inject_wedge_alarm() {  # <state> <age-seconds>
-  local state=$1 age=$2 marker target
+  local state=$1 age=$2 marker backend target session
   marker="$state/.subsuper-inject-wedged"
   # Re-alarm at most once per max-defer window so a long wedge does not spam.
   if [ "$(_file_age "$marker")" -lt "${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}" ]; then
@@ -478,8 +610,21 @@ inject_wedge_alarm() {  # <state> <age-seconds>
     printf 'The supervisor pane could not accept an escalation. Buffered items:\n'
     cat "$state/.subsuper-escalations" 2>/dev/null
   } > "$marker" 2>/dev/null || true
+  backend="${FM_SUPERVISOR_BACKEND:-$FM_SUPERVISOR_BACKEND_DEFAULT}"
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
-  tmux display-message -t "$target" "fm: away-mode escalations WEDGED ${age}s — see $marker" 2>/dev/null || true
+  case "$backend" in
+    tmux)
+      tmux display-message -t "$target" "fm: away-mode escalations WEDGED ${age}s — see $marker" 2>/dev/null || true
+      ;;
+    herdr)
+      if fm_backend_source herdr >/dev/null 2>&1 && fm_backend_herdr_parse_target "$target"; then
+        session=$FM_BACKEND_HERDR_SESSION
+        fm_backend_herdr_cli "$session" notification show "fm away-mode" \
+          --body "escalations wedged ${age}s; see $marker" \
+          --position top-right --sound request >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
 }
 
 _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first arrived (sidecar epoch)
@@ -614,7 +759,7 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target retries sleep_s verdict
+  local msg=$1 state endpoint backend target source retries sleep_s verdict
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -626,19 +771,26 @@ inject_msg() {  # <message> [state]
   # keys off its presence at the start of the message.
   msg=$(_collapse_newlines "$msg")
   msg="${FM_INJECT_MARK}${msg}"
-  target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
-  tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1 || return 1
+  endpoint=$(discover_supervisor_endpoint) || true
+  IFS="$(printf '\t')" read -r backend target source <<EOF
+$endpoint
+EOF
+  backend=${FM_SUPERVISOR_BACKEND:-${backend:-$FM_SUPERVISOR_BACKEND_DEFAULT}}
+  target=${FM_SUPERVISOR_TARGET:-${target:-$FM_SUPERVISOR_TARGET_DEFAULT}}
+  supervisor_backend_supported "$backend" || { log "inject failed: unsupported supervisor backend '$backend'"; return 1; }
+  [ -n "$target" ] || { log "inject failed: supervisor target unresolved for backend '$backend'"; return 1; }
+  supervisor_target_exists "$backend" "$target" || return 1
   # (3) Busy-guard: never inject into an in-use pane. Two checks:
   #   a) pane_is_busy: the harness shows a busy footer (agent mid-turn).
   #   b) pane_input_pending: the cursor line has real unsubmitted text after
   #      dim/faint ghost text and borders are ignored (a human's half-typed line,
   #      or a previous injection whose Enter was swallowed).
-  if pane_is_busy "$target"; then
-    log "inject deferred: supervisor pane busy (agent mid-turn)"
+  if pane_is_busy "$target" "$backend"; then
+    log "inject deferred: supervisor pane busy (backend=$backend, agent mid-turn)"
     return 1
   fi
-  if pane_input_pending "$target"; then
-    log "inject deferred: supervisor pane has pending input (non-empty composer)"
+  if pane_input_pending "$target" "$backend"; then
+    log "inject deferred: supervisor pane has pending input (backend=$backend, non-empty composer)"
     return 1
   fi
   # (4) Type the digest ONCE, then submit with Enter (retry Enter only, never
@@ -647,11 +799,11 @@ inject_msg() {  # <message> [state]
   # count as delivered, so the buffer is preserved (strict) rather than cleared.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
-  verdict=$(fm_tmux_submit_core "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
+  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s") || verdict=send-failed
   if [ "$verdict" = empty ]; then
     return 0  # Composer cleared → submit confirmed.
   fi
-  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
+  log "inject failed: submit unconfirmed after $retries retries (backend=$backend, verdict=$verdict, text may be in composer)"
   return 1
 }
 
@@ -772,32 +924,37 @@ fm_super_main() {
   fi
   echo "$$" > "$PIDFILE"
 
-  # --- auto-discover the supervisor target (the pane running firstmate) -----
-  # Priority: FM_SUPERVISOR_TARGET override > $TMUX_PANE (inherited from the
-  # pane that launched the daemon, normally firstmate's own) > firstmate:0
-  # fallback. Exporting the result into FM_SUPERVISOR_TARGET makes inject_msg
-  # (which reads that env var) use the discovered pane without an extra global.
-  local discovered target_source
-  target_source="FM_SUPERVISOR_TARGET"
-  if [ -z "${FM_SUPERVISOR_TARGET:-}" ]; then
-    if [ -n "${TMUX_PANE:-}" ]; then
-      target_source="TMUX_PANE"
-    else
-      target_source="FALLBACK(firstmate:0)"
-    fi
+  # --- auto-discover the supervisor endpoint (the pane running firstmate) ---
+  # Exporting the resolved backend/target makes inject_msg use the same endpoint
+  # without re-deriving it differently later.
+  local endpoint discover_rc SUPERVISOR_BACKEND TARGET target_source
+  if endpoint=$(discover_supervisor_endpoint); then discover_rc=0; else discover_rc=$?; fi
+  IFS="$(printf '\t')" read -r SUPERVISOR_BACKEND TARGET target_source <<EOF
+$endpoint
+EOF
+  SUPERVISOR_BACKEND=${SUPERVISOR_BACKEND:-${FM_SUPERVISOR_BACKEND:-$FM_SUPERVISOR_BACKEND_DEFAULT}}
+  TARGET=${TARGET:-${FM_SUPERVISOR_TARGET:-}}
+  target_source=${target_source:-unknown}
+  if [ "$discover_rc" -ne 0 ]; then
+    case "$target_source" in
+      FALLBACK*)
+        echo "warn: could not auto-discover supervisor pane (no FM_SUPERVISOR_TARGET or TMUX_PANE); falling back to '$TARGET' — verify this is firstmate's pane" >&2
+        ;;
+      UNRESOLVED*)
+        echo "warn: could not auto-discover herdr supervisor pane ($target_source); set FM_SUPERVISOR_TARGET to '<session>:<pane-id>'" >&2
+        ;;
+    esac
   fi
-  if discovered=$(discover_supervisor_target); then
-    : # resolved cleanly
-  else
-    echo "warn: could not auto-discover supervisor pane (no FM_SUPERVISOR_TARGET or TMUX_PANE); falling back to '$discovered' — verify this is firstmate's pane" >&2
-  fi
-  FM_SUPERVISOR_TARGET="$discovered"
-  local TARGET="$FM_SUPERVISOR_TARGET"
+  FM_SUPERVISOR_BACKEND="$SUPERVISOR_BACKEND"
+  FM_SUPERVISOR_TARGET="$TARGET"
+  export FM_SUPERVISOR_BACKEND FM_SUPERVISOR_TARGET
 
   # --- validate supervisor target at startup (a missing target is a typo) ---
-  if ! tmux display-message -p -t "$TARGET" '#{pane_id}' >/dev/null 2>&1; then
-    echo "error: supervisor target '$TARGET' does not resolve to a tmux pane; set FM_SUPERVISOR_TARGET" >&2
-    log "startup failed: target '$TARGET' not found"
+  if ! supervisor_backend_supported "$SUPERVISOR_BACKEND" \
+     || [ -z "$TARGET" ] \
+     || ! supervisor_target_exists "$SUPERVISOR_BACKEND" "$TARGET"; then
+    echo "error: supervisor target '$TARGET' does not resolve to a $SUPERVISOR_BACKEND pane; set FM_SUPERVISOR_TARGET or FM_SUPERVISOR_BACKEND" >&2
+    log "startup failed: target '$TARGET' not found (backend=$SUPERVISOR_BACKEND)"
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     exit 1
@@ -805,7 +962,7 @@ fm_super_main() {
 
   local afk_status="off"
   afk_active "$STATE" && afk_status="on"
-  log "daemon starting (pid $$); target=$TARGET; target_source=$target_source; afk=$afk_status; inject_skip='${FM_INJECT_SKIP:-$INJECT_SKIP_DEFAULT}'; stale_escalate=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}s; batch=${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}s"
+  log "daemon starting (pid $$); backend=$SUPERVISOR_BACKEND; target=$TARGET; target_source=$target_source; afk=$afk_status; inject_skip='${FM_INJECT_SKIP:-$INJECT_SKIP_DEFAULT}'; stale_escalate=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}s; batch=${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}s"
 
   # --- shutdown: flush buffered escalations, reap child, release lock -------
   local WATCHER_PID="" CUR_TMP=""
@@ -861,8 +1018,8 @@ fm_super_main() {
     # has nowhere to go, and firstmate itself is the consumer of escalations.
     # Catch-up signals persist in state/*.status and flow on the next run, so
     # this delays rather than loses work.
-    if ! tmux display-message -p -t "$TARGET" '#{pane_id}' >/dev/null 2>&1; then
-      log "warn: supervisor target '$TARGET' gone; backing off ${INJECT_FAIL_SLEEP}s, will retry"
+    if ! supervisor_target_exists "$SUPERVISOR_BACKEND" "$TARGET"; then
+      log "warn: supervisor target '$TARGET' gone (backend=$SUPERVISOR_BACKEND); backing off ${INJECT_FAIL_SLEEP}s, will retry"
       # Flush is pointless with no pane; preserve any buffered escalations.
       sleep "$INJECT_FAIL_SLEEP"
       continue

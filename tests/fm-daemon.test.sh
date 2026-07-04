@@ -22,6 +22,12 @@ fi
 
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 
+# This suite's historical fake panes are tmux fixtures. The test runner itself
+# may be inside herdr, so pin the default supervisor backend here; herdr-specific
+# tests explicitly override/unset this.
+export FM_SUPERVISOR_BACKEND=tmux
+unset FM_SUPERVISOR_TARGET
+
 
 test_daemon_state_root_uses_fm_home() {
   local dir home override out
@@ -375,6 +381,108 @@ test_afk_absent_daemon_does_not_inject() {
   [ -s "$sent" ] && fail "daemon injected while afk inactive"
   [ -s "$state/.subsuper-escalations" ] || fail "buffer not preserved when afk inactive"
   pass "afk flag absent: daemon does not inject, buffer preserved"
+}
+
+test_discover_supervisor_endpoint_autodetects_herdr_env() {
+  local out backend target source
+  out=$( ( unset TMUX TMUX_PANE FM_SUPERVISOR_TARGET FM_SUPERVISOR_BACKEND
+           HERDR_ENV=1 HERDR_SESSION=fmtest HERDR_PANE_ID=w1:p2 discover_supervisor_endpoint ) )
+  IFS="$(printf '\t')" read -r backend target source <<EOF
+$out
+EOF
+  [ "$backend" = herdr ] || fail "HERDR_ENV=1 should select herdr supervisor backend, got '$backend'"
+  [ "$target" = "fmtest:w1:p2" ] || fail "HERDR_PANE_ID should resolve to fmtest:w1:p2, got '$target'"
+  [ "$source" = "HERDR_PANE_ID" ] || fail "herdr target source should be HERDR_PANE_ID, got '$source'"
+  pass "supervisor discovery: HERDR_ENV/HERDR_PANE_ID resolves the herdr supervisor endpoint"
+}
+
+test_discover_supervisor_endpoint_infers_herdr_from_explicit_target() {
+  local out backend target source
+  out=$( ( unset TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID FM_SUPERVISOR_BACKEND
+           FM_SUPERVISOR_TARGET=fmtest:w1:p9 discover_supervisor_endpoint ) )
+  IFS="$(printf '\t')" read -r backend target source <<EOF
+$out
+EOF
+  [ "$backend" = herdr ] || fail "a <session>:<pane-id> target should infer herdr, got '$backend'"
+  [ "$target" = "fmtest:w1:p9" ] || fail "explicit herdr target changed, got '$target'"
+  [ "$source" = "FM_SUPERVISOR_TARGET" ] || fail "explicit target source should be FM_SUPERVISOR_TARGET, got '$source'"
+  pass "supervisor discovery: a herdr-shaped FM_SUPERVISOR_TARGET selects herdr"
+}
+
+test_discover_supervisor_endpoint_explicit_tmux_target_beats_ambient_herdr() {
+  local out backend target source
+  out=$( ( unset TMUX TMUX_PANE FM_SUPERVISOR_BACKEND
+           HERDR_ENV=1 HERDR_PANE_ID=w1:p2 FM_SUPERVISOR_TARGET=%9 discover_supervisor_endpoint ) )
+  IFS="$(printf '\t')" read -r backend target source <<EOF
+$out
+EOF
+  [ "$backend" = tmux ] || fail "a tmux-style explicit target should select tmux even under ambient HERDR_ENV=1, got '$backend'"
+  [ "$target" = "%9" ] || fail "explicit tmux target changed, got '$target'"
+  [ "$source" = "FM_SUPERVISOR_TARGET" ] || fail "explicit target source should be FM_SUPERVISOR_TARGET, got '$source'"
+  pass "supervisor discovery: an explicit tmux target beats ambient herdr detection"
+}
+
+test_escalate_flush_herdr_uses_backend_submit() {
+  local dir state calls
+  dir=$(make_supercase herdr-inject)
+  state="$dir/state"
+  calls="$dir/calls.log"; : > "$calls"
+  escalate_add "$state" "done: PR https://x/y/pull/42"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() {
+      printf 'exists\t%s\t%s\n' "$1" "$2" >> "$calls"
+      [ "$1" = herdr ] && [ "$2" = "fmtest:w1:p2" ]
+    }
+    pane_is_busy() {
+      printf 'busy\t%s\t%s\n' "$1" "${2:-}" >> "$calls"
+      [ "${2:-}" = herdr ] || return 2
+      return 1
+    }
+    pane_input_pending() {
+      printf 'pending\t%s\t%s\n' "$1" "${2:-}" >> "$calls"
+      [ "${2:-}" = herdr ] || return 2
+      return 1
+    }
+    fm_backend_send_text_submit() {
+      printf 'submit\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$4" "$5" "$6" >> "$calls"
+      [ "$1" = herdr ] && [ "$2" = "fmtest:w1:p2" ] || return 1
+      case "$3" in "$FM_INJECT_MARK"*) : ;; *) return 1 ;; esac
+      printf 'empty'
+    }
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=fmtest:w1:p2 \
+      FM_INJECT_CONFIRM_SLEEP=0.01 escalate_flush "$state"
+  ) || fail "herdr escalate_flush should submit through fm_backend_send_text_submit"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "herdr backend submit did not clear the escalation buffer"
+  assert_contains "$(cat "$calls")" $'submit\therdr\tfmtest:w1:p2' \
+    "daemon did not route herdr injection through fm_backend_send_text_submit"
+  pass "herdr supervisor injection: daemon routes through the backend verified-submit path"
+}
+
+test_escalate_flush_herdr_pending_preserves_buffer() {
+  local dir state calls
+  dir=$(make_supercase herdr-inject-pending)
+  state="$dir/state"
+  calls="$dir/calls.log"; : > "$calls"
+  escalate_add "$state" "needs-decision: pick A"
+  afk_enter "$state"
+  if (
+    fm_backend_target_exists() { [ "$1" = herdr ] && [ "$2" = "fmtest:w1:p2" ]; }
+    pane_is_busy() { return 1; }
+    pane_input_pending() { return 1; }
+    fm_backend_send_text_submit() {
+      printf 'submit\t%s\t%s\n' "$1" "$2" >> "$calls"
+      printf 'pending'
+    }
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=fmtest:w1:p2 \
+      FM_INJECT_CONFIRM_SLEEP=0.01 escalate_flush "$state"
+  ); then
+    fail "herdr escalate_flush should fail when backend submit reports pending"
+  fi
+  [ -s "$state/.subsuper-escalations" ] || fail "pending herdr submit dropped the escalation buffer"
+  assert_contains "$(cat "$calls")" $'submit\therdr\tfmtest:w1:p2' \
+    "daemon did not attempt herdr backend submit before preserving the buffer"
+  pass "herdr supervisor injection: pending composer verdict preserves the buffer for retry"
 }
 
 test_busy_guard_defers_when_supervisor_busy() {
@@ -790,6 +898,11 @@ test_terminal_stale_escalate_leaves_no_marker
 test_signal_escalate_marks_seen_no_catchall_refire
 test_collapse_newlines_pure
 test_afk_absent_daemon_does_not_inject
+test_discover_supervisor_endpoint_autodetects_herdr_env
+test_discover_supervisor_endpoint_infers_herdr_from_explicit_target
+test_discover_supervisor_endpoint_explicit_tmux_target_beats_ambient_herdr
+test_escalate_flush_herdr_uses_backend_submit
+test_escalate_flush_herdr_pending_preserves_buffer
 test_busy_guard_defers_when_supervisor_busy
 test_marker_detection
 test_afk_turn_exemption
