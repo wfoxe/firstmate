@@ -206,9 +206,8 @@ detect_handoff_rel() {
 }
 
 send_text_submit() {  # <text> [strict-empty]
-  local text=$1 strict_empty=${2:-0} settle=0.3 verdict
-  case "$text" in /*|\$*) settle=1.2 ;; esac
-  verdict=$(fm_backend_send_text_submit "$BACKEND" "$TARGET" "$text" "${FM_ROTATE_SEND_RETRIES:-3}" "${FM_ROTATE_SEND_SLEEP:-0.4}" "$settle" "$EXPECTED_LABEL")
+  local text=$1 strict_empty=${2:-0} verdict
+  verdict=$(submit_text_verdict "$text")
   case "$verdict" in
     empty) return 0 ;;
     pending|send-failed)
@@ -224,6 +223,64 @@ send_text_submit() {  # <text> [strict-empty]
         echo "error: text submission to $TARGET during rotation was not confirmed empty (verdict=$verdict)" >&2
         return 1
       fi
+      ;;
+  esac
+}
+
+submit_text_verdict() {  # <text> -> empty|pending|unknown|send-failed
+  local text=$1 settle=0.3 verdict
+  case "$text" in /*|\$*) settle=1.2 ;; esac
+  if ! verdict=$(fm_backend_send_text_submit "$BACKEND" "$TARGET" "$text" "${FM_ROTATE_SEND_RETRIES:-3}" "${FM_ROTATE_SEND_SLEEP:-0.4}" "$settle" "$EXPECTED_LABEL"); then
+    verdict=send-failed
+  fi
+  printf '%s' "$verdict"
+}
+
+shell_ready_now() {
+  fm_backend_shell_ready "$BACKEND" "$TARGET" "$WT" "$EXPECTED_LABEL" >/dev/null 2>&1
+}
+
+wait_for_shell_ready_quiet() {  # <timeout> <poll>
+  local timeout=$1 poll=$2 deadline now status
+  case "$timeout" in ''|*[!0-9]*) timeout=3 ;; esac
+  case "$poll" in ''|*[!0-9]*) poll=1 ;; esac
+  [ "$poll" -gt 0 ] || poll=1
+  deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    set +e
+    shell_ready_now
+    status=$?
+    set -e
+    [ "$status" -eq 0 ] && return 0
+    [ "$status" -eq 2 ] && return 2
+    now=$(date +%s)
+    [ "$now" -ge "$deadline" ] && return 1
+    sleep "$poll"
+  done
+}
+
+submit_exit_command() {  # <command>
+  local text=$1 verdict ack_timeout=${FM_ROTATE_EXIT_ACK_TIMEOUT:-3} ack_poll=${FM_ROTATE_EXIT_ACK_POLL_SECS:-1}
+  verdict=$(submit_text_verdict "$text")
+  case "$verdict" in
+    empty) return 0 ;;
+    pending|unknown)
+      if wait_for_shell_ready_quiet "$ack_timeout" "$ack_poll"; then
+        return 0
+      fi
+      echo "error: exit command for $ID was not acknowledged by an empty composer or verified shell (verdict=$verdict)" >&2
+      return 1
+      ;;
+    send-failed)
+      echo "error: exit command for $ID could not be submitted (verdict=$verdict)" >&2
+      return 1
+      ;;
+    *)
+      if wait_for_shell_ready_quiet "$ack_timeout" "$ack_poll"; then
+        return 0
+      fi
+      echo "error: exit command for $ID returned an unknown submit verdict and no verified shell (verdict=$verdict)" >&2
+      return 1
       ;;
   esac
 }
@@ -266,6 +323,9 @@ rotation_boundary_ready() {  # [quiet]
   esac
   composer=$(fm_backend_composer_state "$BACKEND" "$TARGET" "$EXPECTED_LABEL" 2>/dev/null || printf unknown)
   if [ "$composer" != empty ]; then
+    if shell_ready_now; then
+      return 0
+    fi
     [ "$quiet" = 1 ] || echo "REFUSED: $ID composer is not confirmed empty (state=$composer); refusing to send the exit command." >&2
     return 1
   fi
@@ -395,8 +455,8 @@ launch_template() {
 
 exit_agent() {
   case "$HARNESS" in
-    claude|opencode) send_text_submit "/exit" 1 || { cleanup_pending_exit_text; return 1; } ;;
-    codex|pi) send_text_submit "/quit" 1 || { cleanup_pending_exit_text; return 1; } ;;
+    claude|opencode) submit_exit_command "/exit" || { cleanup_pending_exit_text; return 1; } ;;
+    codex|pi) submit_exit_command "/quit" || { cleanup_pending_exit_text; return 1; } ;;
     grok)
       fm_backend_send_key "$BACKEND" "$TARGET" C-q "$EXPECTED_LABEL"
       sleep 0.2
@@ -440,8 +500,10 @@ wait_for_shell_ready() {
 write_pi_extension_if_needed
 write_continuation_prompt
 
-exit_agent
-wait_for_shell_ready
+if ! shell_ready_now; then
+  exit_agent
+  wait_for_shell_ready
+fi
 
 mkdir -p "$TASK_TMP/gotmp"
 fm_backend_send_text_line "$BACKEND" "$TARGET" "cd $(shell_quote "$WT")" "$EXPECTED_LABEL"

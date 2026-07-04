@@ -63,7 +63,7 @@ case "${1:-}" in
           if [ -f "$cmdfile" ]; then
             cat "$cmdfile"
           else
-            printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-bash}"
+            printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-claude}"
           fi
           exit 0 ;;
       esac
@@ -101,17 +101,21 @@ case "${1:-}" in
           printf '[ENTER]\n' >> "$SENT"
           pending_file="${FM_FAKE_TMUX_PENDING_FILE:-$SENT.pending}"
           cmdfile="${FM_FAKE_TMUX_COMMAND_FILE:-$SENT.command}"
-          pending=""
+          pending=""; exit_cmd=0
           [ -f "$pending_file" ] && pending=$(cat "$pending_file")
           case "$pending" in
-            /exit|/quit) printf 'bash\n' > "$cmdfile" ;;
+            /exit|/quit) printf 'bash\n' > "$cmdfile"; exit_cmd=1 ;;
             *"claude --dangerously-skip-permissions"*) printf 'claude\n' > "$cmdfile" ;;
             *" codex "*|codex\ *) printf 'codex\n' > "$cmdfile" ;;
             *" opencode "*|opencode\ *) printf 'opencode\n' > "$cmdfile" ;;
             *" pi "*|pi\ *) printf 'pi\n' > "$cmdfile" ;;
             *" grok "*|grok\ *) printf 'grok\n' > "$cmdfile" ;;
           esac
-          [ "${FM_FAKE_TMUX_KEEP_PENDING:-0}" = 1 ] || printf '│ > │\n' > "$CAPTURE"
+          if [ "$exit_cmd" = 1 ] && [ "${FM_FAKE_TMUX_EXIT_SHELL_PROMPT:-0}" = 1 ]; then
+            printf 'Mac:%s wes$ \n' "${FM_FAKE_TMUX_PATH:-wt}" > "$CAPTURE"
+          elif [ "${FM_FAKE_TMUX_KEEP_PENDING:-0}" != 1 ]; then
+            printf '│ > │\n' > "$CAPTURE"
+          fi
           ;;
         C-q|C-c|C-u|Escape)
           printf '[%s]\n' "$1" >> "$SENT"
@@ -616,14 +620,55 @@ test_rotate_refuses_unconfirmed_exit_submit() {
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
   set +e
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" FM_FAKE_TMUX_KEEP_PENDING=1 "$ROTATE" task 2>&1)
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_ROTATE_EXIT_ACK_TIMEOUT=0 FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" FM_FAKE_TMUX_KEEP_PENDING=1 "$ROTATE" task 2>&1)
   status=$?
   set -e
   [ "$status" -eq 1 ] || fail "rotate should refuse unconfirmed exit submit, got $status: $out"
-  assert_contains "$out" "not confirmed empty" "rotate did not explain unconfirmed exit submit"
+  assert_contains "$out" "not acknowledged by an empty composer or verified shell" "rotate did not explain unconfirmed exit submit"
   grep -F "export GOTMPDIR" "$sent" >/dev/null && fail "rotate continued with shell commands after unconfirmed exit"
   assert_contains "$(cat "$sent")" "[C-u]" "rotate did not try to clear the unsubmitted exit text after a failed submit"
   pass "fm-rotate refuses to relaunch after an unconfirmed exit submit"
+}
+
+test_rotate_accepts_shell_prompt_as_exit_ack() {
+  local dir state data wt fakebin sent cap out cmdfile
+  dir="$TMP_ROOT/rotate-shell-prompt-ack"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"; cmdfile="$dir/current-command"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"; printf 'claude\n' > "$cmdfile"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_COMMAND_FILE="$cmdfile" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" FM_FAKE_TMUX_EXIT_SHELL_PROMPT=1 "$ROTATE" task)
+  assert_contains "$out" "rotated task" "rotate did not report success when /exit exposed a shell prompt"
+  assert_contains "$(cat "$sent")" "/exit" "rotate did not send the exit command"
+  assert_contains "$(cat "$sent")" "export GOTMPDIR" "rotate did not continue after verified shell-ready exit acknowledgement"
+  assert_contains "$(cat "$sent")" "claude --dangerously-skip-permissions" "rotate did not relaunch Claude after shell-ready exit acknowledgement"
+  pass "fm-rotate accepts verified shell readiness as the /exit acknowledgement"
+}
+
+test_rotate_relaunches_from_already_exited_shell() {
+  local dir state data wt fakebin sent cap out cmdfile
+  dir="$TMP_ROOT/rotate-already-shell"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"; cmdfile="$dir/current-command"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf 'Mac:%s wes$ \n' "$wt" > "$cap"; : > "$sent"; printf 'bash\n' > "$cmdfile"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_COMMAND_FILE="$cmdfile" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  assert_contains "$out" "rotated task" "rotate did not recover a pane that was already at a verified shell"
+  assert_not_contains "$(cat "$sent")" "/exit" "already-exited recovery should not send another exit command"
+  assert_contains "$(cat "$sent")" "claude --dangerously-skip-permissions" "already-exited recovery did not relaunch Claude"
+  pass "fm-rotate relaunches when a previous attempt already left the pane at a shell"
 }
 
 test_rotate_waits_for_verified_shell_before_relaunch() {
@@ -752,6 +797,8 @@ test_rotate_refuses_grok_orca_before_exit
 test_rotate_refuses_unsupported_shell_ready_before_exit
 test_rotate_refuses_unsupported_backend_before_handoff_request
 test_rotate_refuses_unconfirmed_exit_submit
+test_rotate_accepts_shell_prompt_as_exit_ack
+test_rotate_relaunches_from_already_exited_shell
 test_rotate_waits_for_verified_shell_before_relaunch
 test_rotate_waits_for_handoff_then_relaunches
 test_rotate_relaunches_same_worktree_with_committed_handoff
