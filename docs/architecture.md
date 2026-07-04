@@ -198,6 +198,14 @@ Fleet state lives in each task's session-provider backend (tmux by hard default,
 For herdr, respawning after a server-restored layout closes and replaces confirmed no-agent or dead task-tab husks instead of requiring manual tab cleanup.
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.
 
+## Context rotation
+
+The fleet rotation method is stow, then restart.
+For crews, the watcher emits `rotation-due: <id> <pct>%` only when verified context fullness is at or above `FM_ROTATE_THRESHOLD` (default `70`) and the crew is at a turn boundary with no busy signal.
+`fm-rotate.sh` then requires a committed handoff/stow doc, exits the old harness, and relaunches a fresh harness process in the same endpoint, worktree, and branch.
+For firstmate itself, `/stow` is the canonical stow step; when firstmate is started through `fm-run.sh`, exiting after `/stow` relaunches a fresh session.
+See [`docs/context-rotation.md`](context-rotation.md).
+
 ## Development notes
 
 The current watcher reliability work combines always-on bash triage with a durable queue for actionable wakes, a race-proof singleton lock, duplicate self-eviction, drain-time liveness assertion, and a self-verifying tracked-child arm wrapper.

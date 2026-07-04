@@ -47,6 +47,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-context-lib.sh
+. "$SCRIPT_DIR/fm-context-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -65,8 +67,10 @@ SEP=' · '
 
 # Emit the one canonical line and exit 0. Detail is optional.
 emit() {  # <state> <source> [detail]
-  local line="state: $1${SEP}source: $2"
+  local line="state: $1${SEP}source: $2" pct
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  pct=$(fm_context_percent_from_meta "$META" "$STATE" 2>/dev/null || true)
+  [ -n "$pct" ] && line="$line${SEP}context: ${pct}%"
   printf '%s\n' "$line"
   exit 0
 }

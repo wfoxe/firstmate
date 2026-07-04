@@ -23,6 +23,10 @@
 #   check: <script>: <out> per-task check output, always actionable
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
+#   rotation-due: <id> <pct>%
+#                          a crew reached FM_ROTATE_THRESHOLD context fullness
+#                          at a turn boundary and is not provably working
+#                          (never emitted while the busy signature is present)
 # For normal supervision, re-arm after each printed reason by running
 # bin/fm-watch-arm.sh through the harness's tracked background mechanism. Direct
 # duplicate invocations of this script still no-op through the watcher singleton
@@ -133,6 +137,7 @@ BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
+ROTATE_THRESHOLD=$(fm_context_threshold)
 
 # afk_present: 0 while the away-mode flag exists. When set, the daemon wraps this
 # watcher and owns triage, so the watcher must behave one-shot (enqueue + exit on
@@ -340,6 +345,29 @@ mark_all_captain_relevant_surfaced() {
   done < <(scan_captain_relevant_statuses "$STATE")
 }
 
+_rotation_seen_path() { printf '%s/.rotation-seen-%s' "$STATE" "$(printf '%s' "$1" | tr ':/.' '___')"; }
+
+rotation_seen_matches() {  # <id> <pct> <signature>
+  local id=$1 pct=$2 sig=$3 seen
+  seen=$(cat "$(_rotation_seen_path "$id")" 2>/dev/null || true)
+  [ "$seen" = "pct=$pct sig=$sig" ]
+}
+
+mark_rotation_seen() {  # <id> <pct> <signature>
+  local id=$1 pct=$2 sig=$3
+  printf 'pct=%s sig=%s' "$pct" "$sig" > "$(_rotation_seen_path "$id")"
+}
+
+rotation_due_reason() {  # <id> <signature>
+  local id=$1 sig=$2 pct
+  [ -n "$id" ] || return 1
+  pct=$(crew_context_percent "$id" "$STATE" 2>/dev/null || true)
+  case "$pct" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pct" -ge "$ROTATE_THRESHOLD" ] || return 1
+  rotation_seen_matches "$id" "$pct" "$sig" && return 1
+  printf 'rotation-due: %s %s%%' "$id" "$pct"
+}
+
 # Cheap heartbeat fleet-scan (the always-on twin of the daemon's catch-all). 0 if
 # any captain-relevant status has NOT already been surfaced to firstmate (its
 # content differs from the .hb-surfaced-<task> marker). Pure detect, no side
@@ -412,6 +440,53 @@ while :; do
 $pending
 EOF
     reason="signal:$files"
+    rotation_reason=""
+    rotation_task=""
+    rotation_pct=""
+    rotation_sig=""
+    if ! afk_present; then
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        base=${f##*/}
+        case "$base" in
+          *.turn-ended) task=${base%.turn-ended} ;;
+          *) continue ;;
+        esac
+        # A high-context turn-end is rotation-actionable only after the crew is
+        # no longer provably working. This reuses the same current-state read as
+        # no-verb signal triage, so a busy footer or active run suppresses rotation.
+        crew_is_provably_working "$task" && continue
+        rotation_sig="signal:$sig"
+        rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+        [ -n "$rotation_reason" ] || continue
+        rotation_task=$task
+        rotation_pct=${rotation_reason##* }
+        rotation_pct=${rotation_pct%%%}
+        break
+      done <<EOF
+$pending
+EOF
+    fi
+    if [ -n "$rotation_reason" ]; then
+      fm_wake_append rotation-due "$rotation_task" "$rotation_reason" || exit 1
+      if signal_reason_is_actionable $files; then
+        while IFS=$(printf '\t') read -r sf sig f; do
+          [ -n "$sf" ] || continue
+          fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+        done <<EOF
+$pending
+EOF
+      fi
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        printf '%s' "$sig" > "$sf"
+        mark_surfaced "$f"
+      done <<EOF
+$pending
+EOF
+      mark_rotation_seen "$rotation_task" "$rotation_pct" "$rotation_sig"
+      wake "$rotation_reason"
+    fi
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
     #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
@@ -506,6 +581,18 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
+              task=$(window_to_task "$w" "$STATE")
+              rotation_sig="stale:$h"
+              rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+              if [ -n "$rotation_reason" ]; then
+                rotation_pct=${rotation_reason##* }
+                rotation_pct=${rotation_pct%%%}
+                fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_rotation_seen "$task" "$rotation_pct" "$rotation_sig"
+                wake "$rotation_reason"
+              fi
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
@@ -540,6 +627,18 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed non-terminal stale (provably working): $w"
             else
+              task=$(window_to_task "$w" "$STATE")
+              rotation_sig="stale:$h"
+              rotation_reason=$(rotation_due_reason "$task" "$rotation_sig" || true)
+              if [ -n "$rotation_reason" ]; then
+                rotation_pct=${rotation_reason##* }
+                rotation_pct=${rotation_pct%%%}
+                fm_wake_append rotation-due "$task" "$rotation_reason" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_rotation_seen "$task" "$rotation_pct" "$rotation_sig"
+                wake "$rotation_reason"
+              fi
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"

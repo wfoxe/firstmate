@@ -31,6 +31,11 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 # or no-mistakes install; absent, it points at the real sibling script.
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
+# Optional context telemetry. Unsupported harnesses or unparseable panes return
+# no reading, which is deliberately non-actionable.
+# shellcheck source=bin/fm-context-lib.sh
+. "$_FM_CLASSIFY_LIB_DIR/fm-context-lib.sh"
+
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
 # absorbs them only with positive provably-working evidence, while the daemon uses
@@ -122,6 +127,13 @@ crew_is_provably_working() {  # <id>
     run-step|pane) return 0 ;;
     *)             return 1 ;;
   esac
+}
+
+crew_context_percent() {  # <id> [state]
+  local id=$1 state=${2:-${STATE:-${FM_STATE_OVERRIDE:-}}}
+  [ -n "$id" ] || return 1
+  [ -n "$state" ] || return 1
+  fm_context_percent_for_task "$id" "$state"
 }
 
 # 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
