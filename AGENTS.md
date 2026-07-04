@@ -745,6 +745,7 @@ Inline facts that must survive without a loaded skill:
 
 - Every daemon injection is prefixed with `FM_INJECT_MARK`, ASCII unit separator `0x1f`, so internal escalations are distinguishable from a captain message.
 - While `state/.afk` exists, the daemon owns the watcher; do not separately arm `fm-watch-arm.sh` or `fm-watch.sh`.
+- Daemon injection is backend-aware for the supervisor pane on tmux and herdr. It resolves `FM_SUPERVISOR_BACKEND`, then explicit target shape (a herdr-shaped `FM_SUPERVISOR_TARGET` selects herdr; other explicit targets select tmux), then runtime detection (`$TMUX` wins over `HERDR_ENV=1`), and on herdr auto-targets `${HERDR_SESSION:-default}:$HERDR_PANE_ID` unless overridden.
 - If firstmate receives a marked message while afk is active, it is an internal escalation: stay afk and process it.
 - If the message starts with `/afk`, stay afk and refresh the flag.
 - Any other unmarked message means the captain is back: clear `state/.afk`, stop the daemon, flush catch-up from `state/.wake-queue`, `state/.subsuper-escalations`, and `state/.subsuper-inject-wedged`, then re-arm normal watcher supervision.
@@ -884,8 +885,7 @@ On the next locked session-start bootstrap step, an `.env` with a non-empty `FMX
 The shim rides the existing `state/*.check.sh` mechanism (section 8): each check cycle `bin/fm-x-poll.sh` does one short, bounded poll of the relay; HTTP 204 is silent, a pending mention with non-empty text is stashed to `state/x-inbox/<request_id>.json` and prints `x-mention <request_id>`, which the watcher surfaces as a `check:` wake.
 Missing local poll dependencies and relay auth/config responses print one rate-limited `x-mode-error ...` diagnostic, which the watcher surfaces as a `check:` wake for captain-visible repair.
 On opt-out (the token is removed or emptied), the next locked session-start bootstrap step deletes both artifacts so the instance reverts to the default 300s, no-poll behavior.
-This layer stays additive to the watcher backbone: **no** edit is made to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon (`bin/fm-supervise-daemon.sh` and the `afk` skill).
-X mode lives in X-specific `bin/` scripts, the `fmx-respond` skill, and the generated local artifacts.
+This layer stays additive to the watcher backbone: X mode lives in X-specific `bin/` scripts, the `fmx-respond` skill, and the generated local artifacts; it does not replace `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon's ownership while `state/.afk` exists.
 
 **Cadence.**
 An X instance polls every 30s instead of the default 300s.

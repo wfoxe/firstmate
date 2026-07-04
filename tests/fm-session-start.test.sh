@@ -123,16 +123,18 @@ SH
   chmod +x "$fakebin/tmux"
 }
 
-# make_fake_herdr <fakebin> <live-pane>: `herdr pane get <pane>` succeeds only
-# for the given pane id - the exact primitive fm_backend_target_exists uses
-# for a herdr endpoint liveness read. No version/server-start calls: a
-# liveness check must never auto-start a server (fm-backend.sh's contract).
+# make_fake_herdr <fakebin> <live-pane>: `herdr pane get <pane> --session <s>`
+# succeeds only for the given pane id - the exact primitive
+# fm_backend_target_exists uses for a herdr endpoint liveness read. No
+# version/server-start calls: a liveness check must never auto-start a server
+# (fm-backend.sh's contract), but it still uses the verified --session target.
 make_fake_herdr() {
   local fakebin=$1 live=$2
   cat > "$fakebin/herdr" <<SH
 #!/usr/bin/env bash
 set -u
 if [ "\${1:-}" = pane ] && [ "\${2:-}" = get ]; then
+  [ "\${4:-}" = "--session" ] && [ "\${5:-}" = "sess" ] || exit 1
   [ "\${3:-}" = "$live" ] && exit 0
   exit 1
 fi

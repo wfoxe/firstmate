@@ -424,7 +424,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
-      HERDR_SESSION="$session" herdr pane get "$pane" >/dev/null 2>&1
+      fm_backend_herdr_cli "$session" pane get "$pane" >/dev/null 2>&1
       ;;
     zellij)
       fm_backend_source zellij || return 1
