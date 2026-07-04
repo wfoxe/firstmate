@@ -202,7 +202,7 @@ Use `/stow` before an intentional reset when the conversation may hold durable k
 
 The fleet rotation method is stow, then restart.
 For crews, the watcher emits `rotation-due: <id> <pct>%` only when verified context fullness is at or above `FM_ROTATE_THRESHOLD` (default `70`) and the crew is at a turn boundary with no busy signal.
-`fm-rotate.sh` then requires a committed handoff/stow doc that is fresh for the current rotation, exits the old harness, and relaunches a fresh harness process in the same endpoint, worktree, and branch.
+`fm-rotate.sh` then requires a committed handoff/stow doc that is fresh for the current rotation, exits the old harness when needed, accepts a verified shell in the task worktree as the exit acknowledgement, and relaunches a fresh harness process in the same endpoint, worktree, and branch.
 The verified relaunch path currently supports tmux and herdr endpoints; zellij and Orca do not emit `rotation-due` wakes because the watcher suppresses rotation signals for backends that cannot be safely relaunched.
 For firstmate itself, `/stow` is the canonical stow step; when firstmate is started through `fm-run.sh`, exiting after `/stow` relaunches a fresh session.
 See [`docs/context-rotation.md`](context-rotation.md).

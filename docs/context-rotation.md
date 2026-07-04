@@ -34,7 +34,8 @@ The installed `codex-cli 0.142.5` help output does not document a footer contrac
 Reported formats such as `NN% context left` would need adapter code that converts remaining context into fullness.
 
 `bin/fm-rotate.sh <id>` performs the crew restart.
-It requires a committed handoff/stow document (or `--handoff <path>` naming one) that is newer than the previous recorded rotation, refuses any still-dirty worktree before exiting/relaunching, exits the old harness session with the verified adapter command, waits for backend-specific evidence that the endpoint has returned to a shell in the task worktree, then launches a fresh harness process in the same endpoint, same worktree, and same branch with a generated `data/<id>/rotation-prompt.md` continuation prompt pointing at the handoff.
+It requires a committed handoff/stow document (or `--handoff <path>` naming one) that is newer than the previous recorded rotation, refuses any still-dirty worktree before exiting/relaunching, exits the old harness session with the verified adapter command when it is still running, accepts an immediate verified shell as the exit acknowledgement, then launches a fresh harness process in the same endpoint, same worktree, and same branch with a generated `data/<id>/rotation-prompt.md` continuation prompt pointing at the handoff.
+If a previous rotation attempt already left the pane at a verified shell in the task worktree, re-running `fm-rotate.sh` skips the exit step and relaunches without creating a new worktree or branch.
 After the fresh harness launch starts, it appends `rotation_handoff=` and `rotation_at=` to the task meta; older handoff docs are ignored on later rotations unless a fresh committed handoff is supplied.
 That verified relaunch path currently supports tmux and herdr endpoints only.
 Zellij and Orca tasks do not emit `rotation-due` wakes until their adapters expose a passive, verified shell-readiness check after harness exit.
@@ -42,7 +43,7 @@ Secondmates are excluded from parent-side `fm-rotate.sh` because their durable s
 
 If no committed handoff exists, the foreground-safe default is request-now/rerun-later: `fm-rotate.sh` sends the handoff request and exits `3`.
 Re-run it after the crew reports that a fresh committed handoff exists.
-For a harness-tracked background wait, set `FM_ROTATE_WAIT_SECS` to a positive value; the script then waits for the committed handoff, a clean worktree, an empty composer, and a fresh pane capture with no busy signature before sending `/exit`.
+For a harness-tracked background wait, set `FM_ROTATE_WAIT_SECS` to a positive value; the script then waits for the committed handoff, a clean worktree, and a fresh pane capture with no busy signature before sending `/exit` or relaunching from an already verified shell.
 
 ## Firstmate Itself
 

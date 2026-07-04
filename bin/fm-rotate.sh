@@ -7,6 +7,8 @@
 # If no committed handoff is found, the foreground-safe default sends the crew a
 # handoff request and exits 3. Set FM_ROTATE_WAIT_SECS to a positive value only
 # when this script is running as its own supervised background task.
+# If a prior attempt already exited the harness and left the endpoint at a
+# verified shell in the task worktree, re-running this script relaunches there.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
