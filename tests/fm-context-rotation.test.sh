@@ -55,7 +55,17 @@ SENT="${FM_FAKE_TMUX_SENT:?}"
 case "${1:-}" in
   display-message)
     for a in "$@"; do
-      case "$a" in *cursor_y*) printf '0\n'; exit 0 ;; esac
+      case "$a" in
+        *cursor_y*) printf '0\n'; exit 0 ;;
+        *pane_current_path*) printf '%s\n' "${FM_FAKE_TMUX_PATH:-}"; exit 0 ;;
+        *pane_current_command*)
+          if [ -n "${FM_FAKE_TMUX_COMMAND_FILE:-}" ] && [ -f "$FM_FAKE_TMUX_COMMAND_FILE" ]; then
+            cat "$FM_FAKE_TMUX_COMMAND_FILE"
+          else
+            printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-bash}"
+          fi
+          exit 0 ;;
+      esac
     done
     printf '%%1\n'
     exit 0 ;;
@@ -325,7 +335,7 @@ test_rotate_accepts_explicit_generic_handoff() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task --handoff docs/handoff.md)
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task --handoff docs/handoff.md)
   assert_contains "$out" "rotated task" "rotate did not accept explicit committed handoff"
   assert_grep "rotation_handoff=$wt/docs/handoff.md" "$state/task.meta" "rotate did not record explicit handoff"
   pass "fm-rotate accepts explicit committed generic handoff"
@@ -344,7 +354,7 @@ test_rotate_autodetects_marked_handoff() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
   assert_contains "$out" "rotated task" "rotate did not autodetect marked handoff"
   assert_grep "rotation_handoff=$wt/docs/handoff.md" "$state/task.meta" "rotate did not record marked handoff"
   pass "fm-rotate autodetects a committed handoff with an explicit task marker"
@@ -394,6 +404,35 @@ test_rotate_refuses_unconfirmed_exit_submit() {
   pass "fm-rotate refuses to relaunch after an unconfirmed exit submit"
 }
 
+test_rotate_waits_for_verified_shell_before_relaunch() {
+  local dir state data wt fakebin sent cap out cmdfile pid i
+  dir="$TMP_ROOT/rotate-shell-ready"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"; out="$dir/out"; cmdfile="$dir/current-command"
+  mkdir -p "$state" "$data"
+  make_git_worktree "$wt"
+  mkdir -p "$wt/docs"
+  printf 'handoff\n' > "$wt/docs/firstmate-handoff-task.md"
+  git -C "$wt" add docs/firstmate-handoff-task.md
+  git -C "$wt" commit -qm handoff
+  fakebin=$(make_rotate_fakebin "$dir")
+  printf '│ > │\n' > "$cap"; : > "$sent"
+  fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
+  touch "$state/.last-watcher-beat"
+  printf 'claude\n' > "$cmdfile"
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_ROTATE_EXIT_TIMEOUT=5 FM_ROTATE_EXIT_POLL_SECS=1 FM_FAKE_TMUX_COMMAND_FILE="$cmdfile" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task > "$out" 2>&1 &
+  pid=$!
+  for i in $(seq 1 20); do
+    grep -F "/exit" "$sent" >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  sleep 1
+  grep -F "export GOTMPDIR" "$sent" >/dev/null && { reap_pid "$pid"; fail "rotate sent relaunch commands before shell readiness was verified"; }
+  printf 'bash\n' > "$cmdfile"
+  wait_for_exit "$pid" 80 || { reap_pid "$pid"; fail "rotate did not finish after shell became ready: $(cat "$out")"; }
+  assert_contains "$(cat "$out")" "rotated task" "rotate did not report success after shell readiness"
+  assert_contains "$(cat "$sent")" "export GOTMPDIR" "rotate did not send relaunch commands after shell readiness"
+  pass "fm-rotate waits for a verified shell before relaunch commands"
+}
+
 test_rotate_waits_for_handoff_then_relaunches() {
   local dir state data wt fakebin sent cap out pid i
   dir="$TMP_ROOT/rotate-wait"; state="$dir/state"; data="$dir/data"; wt="$dir/wt"; sent="$dir/sent"; cap="$dir/capture"; out="$dir/out"
@@ -403,7 +442,7 @@ test_rotate_waits_for_handoff_then_relaunches() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_ROTATE_WAIT_SECS=5 FM_ROTATE_WAIT_POLL_SECS=1 FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task > "$out" 2>&1 &
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_ROTATE_WAIT_SECS=5 FM_ROTATE_WAIT_POLL_SECS=1 FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task > "$out" 2>&1 &
   pid=$!
   for i in $(seq 1 40); do
     grep -F "Context rotation is due" "$sent" >/dev/null 2>&1 && break
@@ -434,7 +473,7 @@ test_rotate_relaunches_same_worktree_with_committed_handoff() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=claude" "kind=ship" "mode=no-mistakes" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
   assert_contains "$out" "rotated task" "rotate did not report success"
   assert_contains "$(cat "$sent")" "/exit" "rotate did not exit the old harness"
   assert_contains "$(cat "$sent")" "cd '$wt'" "rotate did not return to the same worktree"
@@ -456,7 +495,7 @@ test_rotate_secondmate_codex_omits_parent_turnend_notify() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=codex" "kind=secondmate" "mode=secondmate" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
   assert_contains "$out" "rotated task" "secondmate codex rotate did not report success"
   launch=$(grep -F "codex " "$sent" | tail -n 1)
   assert_contains "$launch" "FM_HOME='$wt' codex" "secondmate codex rotate did not relaunch inside the secondmate home"
@@ -477,7 +516,7 @@ test_rotate_secondmate_pi_omits_parent_turnend_extension() {
   printf '│ > │\n' > "$cap"; : > "$sent"
   fm_write_meta "$state/task.meta" "window=fm:fm-task" "worktree=$wt" "project=$wt" "harness=pi" "kind=secondmate" "mode=secondmate" "tasktmp=$dir/tmp"
   touch "$state/.last-watcher-beat"
-  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$dir/root" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_FAKE_TMUX_PATH="$wt" FM_FAKE_TMUX_CAPTURE="$cap" FM_FAKE_TMUX_SENT="$sent" "$ROTATE" task)
   assert_contains "$out" "rotated task" "secondmate pi rotate did not report success"
   launch=$(grep -F " pi " "$sent" | tail -n 1)
   assert_contains "$launch" "FM_HOME='$wt' pi" "secondmate pi rotate did not relaunch inside the secondmate home"
@@ -500,6 +539,7 @@ test_rotate_accepts_explicit_generic_handoff
 test_rotate_autodetects_marked_handoff
 test_rotate_refuses_grok_orca_before_exit
 test_rotate_refuses_unconfirmed_exit_submit
+test_rotate_waits_for_verified_shell_before_relaunch
 test_rotate_waits_for_handoff_then_relaunches
 test_rotate_relaunches_same_worktree_with_committed_handoff
 test_rotate_secondmate_codex_omits_parent_turnend_notify

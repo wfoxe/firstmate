@@ -374,6 +374,36 @@ fm_backend_send_literal() {  # <backend> <target> <text> [expected-label]
   esac
 }
 
+fm_backend_shell_ready() {  # <backend> <target> <expected-cwd> [expected-label]
+  local backend=$1 target=$2 expected_cwd=$3 cwd cmd session pane state
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux)
+      cwd=$(fm_backend_tmux_current_path "$target" 2>/dev/null || true)
+      cmd=$(tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+      [ "$cwd" = "$expected_cwd" ] || return 1
+      case "$cmd" in sh|bash|zsh|fish|dash|ksh|mksh) return 0 ;; esac
+      return 1
+      ;;
+    herdr)
+      session=${target%%:*}
+      pane=${target#*:}
+      [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
+      state=$(fm_backend_herdr_pane_agent_state "$session" "$pane" 2>/dev/null || printf unknown)
+      [ "$state" = no-agent ] || return 1
+      cwd=$(fm_backend_herdr_current_path "$target" 2>/dev/null || true)
+      [ "$cwd" = "$expected_cwd" ]
+      ;;
+    zellij|orca)
+      return 2
+      ;;
+    *)
+      echo "error: no shell-ready implementation for backend '$backend'" >&2
+      return 2
+      ;;
+  esac
+}
+
 # fm_backend_kill: remove the task's session endpoint (best-effort; a
 # nonexistent/already-gone target is not an error - callers already swallow
 # failures here exactly as the inline `tmux kill-window ... || true` did).

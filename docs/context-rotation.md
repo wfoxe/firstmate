@@ -29,7 +29,7 @@ The installed `codex-cli 0.142.5` help output does not document a footer contrac
 Reported formats such as `NN% context left` would need adapter code that converts remaining context into fullness.
 
 `bin/fm-rotate.sh <id>` performs the crew restart.
-It requires a committed handoff/stow document (or `--handoff <path>` naming one), refuses any still-dirty worktree before exiting/relaunching, exits the old harness session with the verified adapter command, then launches a fresh harness process in the same endpoint, same worktree, and same branch with a continuation prompt pointing at the handoff.
+It requires a committed handoff/stow document (or `--handoff <path>` naming one), refuses any still-dirty worktree before exiting/relaunching, exits the old harness session with the verified adapter command, waits for backend-specific evidence that the endpoint has returned to a shell in the task worktree, then launches a fresh harness process in the same endpoint, same worktree, and same branch with a continuation prompt pointing at the handoff.
 If no committed handoff exists, it sends the crew a handoff request and waits up to `FM_ROTATE_WAIT_SECS` seconds (default `900`) for the handoff to be committed, the worktree to become clean, and the crew to return to a non-busy boundary.
 Set `FM_ROTATE_WAIT_SECS=0` when a supervisor needs the request-only behavior; that exits `3` after sending the handoff request.
 

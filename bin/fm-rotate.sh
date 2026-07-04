@@ -311,11 +311,36 @@ exit_agent() {
   esac
 }
 
+wait_for_shell_ready() {
+  local timeout=${FM_ROTATE_EXIT_TIMEOUT:-${FM_ROTATE_EXIT_SETTLE:-30}} poll=${FM_ROTATE_EXIT_POLL_SECS:-1}
+  local deadline now status
+  case "$timeout" in ''|*[!0-9]*) timeout=30 ;; esac
+  case "$poll" in ''|*[!0-9]*) poll=1 ;; esac
+  [ "$poll" -gt 0 ] || poll=1
+  deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    set +e
+    fm_backend_shell_ready "$BACKEND" "$TARGET" "$WT" "$EXPECTED_LABEL"
+    status=$?
+    set -e
+    [ "$status" -eq 0 ] && return 0
+    if [ "$status" -eq 2 ]; then
+      echo "error: backend '$BACKEND' cannot verify shell readiness after harness exit; refusing to relaunch into an unverified endpoint" >&2
+      return 1
+    fi
+    now=$(date +%s)
+    [ "$now" -ge "$deadline" ] && break
+    sleep "$poll"
+  done
+  echo "error: $TARGET did not return to a verified shell in $WT within ${timeout}s after harness exit; refusing to send relaunch commands" >&2
+  return 1
+}
+
 write_pi_extension_if_needed
 write_continuation_prompt
 
 exit_agent
-sleep "${FM_ROTATE_EXIT_SETTLE:-2}"
+wait_for_shell_ready
 
 mkdir -p "$TASK_TMP/gotmp"
 fm_backend_send_text_line "$BACKEND" "$TARGET" "cd $(shell_quote "$WT")" "$EXPECTED_LABEL"
