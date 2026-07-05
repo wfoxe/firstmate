@@ -262,7 +262,7 @@ Herdr's CLI exposes no cursor-row primitive, so the composer row is located by s
 A popup-close-with-placeholder-fill still reads as real content on that row, so it correctly classifies as pending and the retry loop sends the required second Enter, instead of stopping early.
 Known ghost/placeholder composer text (`Type a message...`, verified grok 0.2.82's empty-composer hint) is recognized and still reads as empty.
 `FM_BACKEND_HERDR_IDLE_RE` extends that placeholder match, and `FM_BACKEND_HERDR_COMPOSER_LINES` controls the tail-window scan depth; both are documented in [`docs/configuration.md`](configuration.md).
-See `fm_backend_herdr_composer_state` and `fm_backend_herdr_send_text_submit` in `bin/backends/herdr.sh` for the implementation, and `tests/fm-backend-herdr.test.sh`'s composer-state and send-text-submit sections (including a dedicated regression test asserting the second Enter is actually sent) for the fake-harness coverage.
+See `fm_backend_herdr_composer_state` and `fm_backend_herdr_send_text_submit` in `bin/backends/herdr.sh` for the implementation, and `tests/fm-backend-herdr.test.sh`'s composer-state and send-text-submit sections (including dedicated regression tests for C-locale prompt-glyph stripping and asserting the second Enter is actually sent) for the fake-harness coverage.
 
 ## Composer verification: structural border-row read, not delta-based
 
