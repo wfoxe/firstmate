@@ -9,6 +9,8 @@
 #                 "CREW_DISPATCH: active config/crew-dispatch.json" plus indented rules,
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "TASKS_AXI: available", "TANGLE: <remediation>",
+#                 "PUSH_TARGET: <repo>: <remote> pushes to ... - disable with: git -C ... config --replace-all remote.<remote>.pushurl no_push://disabled-not-our-repo",
+#                 "PUSH_TARGET: skipped: <reason>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: <window-targets...>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
@@ -26,6 +28,11 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
+#          PUSH_TARGET lines mean the firstmate repo or a project clone has an
+#          explicit or implicit GitHub push target that does not resolve to the
+#          authenticated GitHub login (org repos pass only with admin permission).
+#          The printed remediation replaces the full push-url set with the
+#          no_push://disabled-not-our-repo sentinel, which passes future scans.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -385,6 +392,146 @@ crew_dispatch_validate() {
   ' "$file"
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+github_repo_from_url() {
+  local url=$1 path authority host host_lc owner repo rest
+  case "$url" in
+    ''|no_push://*) return 1 ;;
+  esac
+  if [ "${url#*://}" != "$url" ]; then
+    path=${url#*://}
+    authority=${path%%/*}
+    [ "$authority" != "$path" ] || return 1
+    path=${path#*/}
+    host=${authority##*@}
+    host=${host%%:*}
+  elif [ "${url#*:}" != "$url" ]; then
+    authority=${url%%:*}
+    path=${url#*:}
+    host=${authority##*@}
+  else
+    return 1
+  fi
+  host_lc=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+  [ "$host_lc" = github.com ] || return 1
+  path=${path%%\?*}
+  path=${path%%#*}
+  path=${path%.git}
+  owner=${path%%/*}
+  rest=${path#*/}
+  repo=${rest%%/*}
+  [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$path" ] || return 1
+  printf '%s/%s\n' "$owner" "$repo"
+}
+
+push_target_display_url() {
+  local url=$1 prefix rest authority host path
+  case "$url" in
+    *://*)
+      prefix=${url%%://*}
+      rest=${url#*://}
+      authority=${rest%%/*}
+      [ "$authority" != "$rest" ] || { printf '%s\n' "$url"; return 0; }
+      path=${rest#*/}
+      host=${authority##*@}
+      printf '%s://%s/%s\n' "$prefix" "$host" "$path"
+      ;;
+    *@*:*)
+      rest=${url#*@}
+      printf '%s\n' "$rest"
+      ;;
+    *)
+      printf '%s\n' "$url"
+      ;;
+  esac
+}
+
+push_target_repo_status() {
+  local owner=$1 repo=$2 login=$3 info owner_type admin owner_lc login_lc
+  owner_lc=$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')
+  login_lc=$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')
+  if [ "$owner_lc" = "$login_lc" ]; then
+    printf '%s\n' owned
+    return 0
+  fi
+  info=$(gh api "repos/$owner/$repo" --jq '[.owner.type, (.permissions.admin // false)] | @tsv' 2>/dev/null || true)
+  owner_type=${info%%	*}
+  admin=${info#*	}
+  if [ "$owner_type" = Organization ] && [ "$admin" = true ]; then
+    printf '%s\n' owned
+  elif [ "$owner_type" = Organization ]; then
+    printf '%s\n' org-unverified
+  elif [ -n "$owner_type" ] && [ "$owner_type" != "$info" ]; then
+    printf '%s\n' non-owned
+  else
+    printf '%s\n' unverified
+  fi
+}
+
+push_target_disable_cmd() {
+  local repo_path=$1 remote=$2
+  printf 'git -C %s config --replace-all %s no_push://disabled-not-our-repo' \
+    "$(shell_quote "$repo_path")" "$(shell_quote "remote.$remote.pushurl")"
+}
+
+push_target_collect_repo() {
+  local repo_path=$1 label=$2 remote urls url display_url parsed owner repo
+  git -C "$repo_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  while IFS= read -r remote; do
+    [ -n "$remote" ] || continue
+    urls=$(git -C "$repo_path" remote get-url --push --all "$remote" 2>/dev/null || true)
+    [ -n "$urls" ] || continue
+    while IFS= read -r url; do
+      [ -n "$url" ] || continue
+      parsed=$(github_repo_from_url "$url" || true)
+      [ -n "$parsed" ] || continue
+      display_url=$(push_target_display_url "$url")
+      owner=${parsed%%/*}
+      repo=${parsed#*/}
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$repo_path" "$label" "$remote" "$display_url" "$owner" "$repo"
+    done <<EOF
+$urls
+EOF
+  done <<EOF
+$(git -C "$repo_path" remote 2>/dev/null || true)
+EOF
+}
+
+push_target_scan() {
+  local login repo label tmp repo_path remote url owner status cmd
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-push-targets.XXXXXX" 2>/dev/null) || return 0
+  push_target_collect_repo "$FM_ROOT" "$(basename "$FM_ROOT")" > "$tmp"
+  if [ -d "$PROJECTS" ]; then
+    for repo in "$PROJECTS"/*; do
+      [ -d "$repo" ] || continue
+      label=$(basename "$repo")
+      push_target_collect_repo "$repo" "$label" >> "$tmp"
+    done
+  fi
+  [ -s "$tmp" ] || { rm -f "$tmp"; return 0; }
+  command -v gh >/dev/null 2>&1 || { echo "PUSH_TARGET: skipped: gh unavailable"; rm -f "$tmp"; return 0; }
+  login=$(gh api user --jq .login 2>/dev/null | head -n 1 || true)
+  [ -n "$login" ] || { echo "PUSH_TARGET: skipped: GitHub ownership unavailable (gh api user failed)"; rm -f "$tmp"; return 0; }
+  while IFS='	' read -r repo_path label remote url owner repo; do
+    [ -n "$repo_path" ] || continue
+    status=$(push_target_repo_status "$owner" "$repo" "$login")
+    [ "$status" = owned ] && continue
+    cmd=$(push_target_disable_cmd "$repo_path" "$remote")
+    case "$status" in
+      org-unverified)
+        echo "PUSH_TARGET: $label: $remote pushes to org GitHub repo not verified as captain-admin $url - disable with: $cmd" ;;
+      unverified)
+        echo "PUSH_TARGET: $label: $remote pushes to GitHub repo with unverifiable ownership $url - disable with: $cmd" ;;
+      *)
+        echo "PUSH_TARGET: $label: $remote pushes to non-owned $url - disable with: $cmd" ;;
+    esac
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -407,6 +554,7 @@ if command -v no-mistakes >/dev/null 2>&1 && ! no_mistakes_compatible; then
   echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
 fi
 gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
+push_target_scan
 # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
 # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
 # primary only; detached-HEAD worktrees and secondmate homes never trip it.

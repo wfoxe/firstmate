@@ -187,6 +187,10 @@ Dirty clones, non-default branches, detached HEADs with unique commits, diverged
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
 The refresh also prunes local branches whose remote is gone and that no worktree still needs.
 
+The same bootstrap pass scans the firstmate repo and every project clone for GitHub push targets before any crew dispatch.
+Captain-owned remotes pass silently, `no_push://disabled-not-our-repo` is the accepted fetch-only sentinel, and non-owned or unverifiable GitHub push targets report `PUSH_TARGET:` with a copy-pasteable local config remediation.
+Organization remotes pass only when GitHub cheaply verifies admin permission for the authenticated login; if GitHub identity cannot be resolved, the scan skips instead of guessing.
+
 ## Self-updates stay safe
 
 `/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from `origin`, then re-reads updated instructions and nudges updated secondmates without touching project clones.
