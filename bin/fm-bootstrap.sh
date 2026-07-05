@@ -392,20 +392,26 @@ shell_quote() {
 }
 
 github_repo_from_url() {
-  local url=$1 path owner repo rest
+  local url=$1 path authority host host_lc owner repo rest
   case "$url" in
     ''|no_push://*) return 1 ;;
-    https://github.com/*|http://github.com/*|git://github.com/*)
-      path=${url#*://github.com/} ;;
-    https://*@github.com/*|http://*@github.com/*)
-      path=${url#*@github.com/} ;;
-    ssh://*@github.com/*)
-      path=${url#ssh://}
-      path=${path#*@github.com/} ;;
-    *@github.com:*)
-      path=${url#*@github.com:} ;;
-    *) return 1 ;;
   esac
+  if [ "${url#*://}" != "$url" ]; then
+    path=${url#*://}
+    authority=${path%%/*}
+    [ "$authority" != "$path" ] || return 1
+    path=${path#*/}
+    host=${authority##*@}
+    host=${host%%:*}
+  elif [ "${url#*:}" != "$url" ]; then
+    authority=${url%%:*}
+    path=${url#*:}
+    host=${authority##*@}
+  else
+    return 1
+  fi
+  host_lc=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+  [ "$host_lc" = github.com ] || return 1
   path=${path%%\?*}
   path=${path%%#*}
   path=${path%.git}
@@ -414,6 +420,28 @@ github_repo_from_url() {
   repo=${rest%%/*}
   [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$path" ] || return 1
   printf '%s/%s\n' "$owner" "$repo"
+}
+
+push_target_display_url() {
+  local url=$1 prefix rest authority host path
+  case "$url" in
+    *://*)
+      prefix=${url%%://*}
+      rest=${url#*://}
+      authority=${rest%%/*}
+      [ "$authority" != "$rest" ] || { printf '%s\n' "$url"; return 0; }
+      path=${rest#*/}
+      host=${authority##*@}
+      printf '%s://%s/%s\n' "$prefix" "$host" "$path"
+      ;;
+    *@*:*)
+      rest=${url#*@}
+      printf '%s\n' "$rest"
+      ;;
+    *)
+      printf '%s\n' "$url"
+      ;;
+  esac
 }
 
 push_target_repo_status() {
@@ -445,7 +473,7 @@ push_target_disable_cmd() {
 }
 
 push_target_collect_repo() {
-  local repo_path=$1 label=$2 remote urls url parsed owner repo
+  local repo_path=$1 label=$2 remote urls url display_url parsed owner repo
   git -C "$repo_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   while IFS= read -r remote; do
     [ -n "$remote" ] || continue
@@ -455,9 +483,10 @@ push_target_collect_repo() {
       [ -n "$url" ] || continue
       parsed=$(github_repo_from_url "$url" || true)
       [ -n "$parsed" ] || continue
+      display_url=$(push_target_display_url "$url")
       owner=${parsed%%/*}
       repo=${parsed#*/}
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$repo_path" "$label" "$remote" "$url" "$owner" "$repo"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$repo_path" "$label" "$remote" "$display_url" "$owner" "$repo"
     done <<EOF
 $urls
 EOF

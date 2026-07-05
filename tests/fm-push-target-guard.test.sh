@@ -126,6 +126,28 @@ test_non_owned_explicit_push_url_flags() {
   pass "push-target guard flags explicit non-owned GitHub push URLs with remediation"
 }
 
+test_mixed_case_host_with_credentials_flags_safely() {
+  local case_dir root home project fakebin out expect
+  case_dir="$TMP_ROOT/mixed-host-credentials"
+  root="$case_dir/root"
+  home="$case_dir/home"
+  project="$home/projects/zeta"
+  make_repo "$root"
+  make_home "$home"
+  make_repo "$project"
+  git -C "$root" remote add origin https://github.com/captain/firstmate.git
+  git -C "$project" remote add upstream https://github.com/captain/zeta.git
+  git -C "$project" remote set-url --push upstream https://user:token@GitHub.com/other/zeta.git
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  out=$(bootstrap_out "$root" "$home" "$fakebin" | grep '^PUSH_TARGET:' || true)
+  expect="PUSH_TARGET: zeta: upstream pushes to non-owned https://GitHub.com/other/zeta.git - disable with: git -C '$project' config --replace-all 'remote.upstream.pushurl' no_push://disabled-not-our-repo"
+
+  [ "$out" = "$expect" ] || fail "mixed-case credential URL diagnostic mismatch"$'\n'"expected: $expect"$'\n'"actual:   $out"
+  assert_not_contains "$out" "user:token" "diagnostics must not echo remote URL credentials"
+  pass "push-target guard redacts credentials and checks mixed-case GitHub hosts"
+}
+
 test_multiple_push_urls_remediation_replaces_full_set() {
   local case_dir root home project fakebin out expect cmd urls
   case_dir="$TMP_ROOT/multiple-pushurls"
@@ -236,6 +258,7 @@ test_gh_unavailable_skips_without_false_alarm() {
 test_owned_push_url_passes
 test_owned_push_url_case_insensitive_passes
 test_non_owned_explicit_push_url_flags
+test_mixed_case_host_with_credentials_flags_safely
 test_multiple_push_urls_remediation_replaces_full_set
 test_no_push_url_passes
 test_fetch_url_fallback_is_scanned
