@@ -28,6 +28,11 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
+#          PUSH_TARGET lines mean the firstmate repo or a project clone has an
+#          explicit or implicit GitHub push target that does not resolve to the
+#          authenticated GitHub login (org repos pass only with admin permission).
+#          The printed remediation replaces the full push-url set with the
+#          no_push://disabled-not-our-repo sentinel, which passes future scans.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
