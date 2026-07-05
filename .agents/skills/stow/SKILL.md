@@ -1,6 +1,6 @@
 ---
 name: stow
-description: Sweep the current session for uncaptured durable knowledge and file it to disk before a context reset. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
+description: Sweep the current session for uncaptured durable knowledge, file it to disk before a context reset, and occasionally prune/compress curated memory so it stays lean. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned", "/stow prune"), before a session reset or context compaction, or periodically to keep operational memory current.
 user-invocable: true
 metadata:
   internal: true
@@ -38,13 +38,51 @@ The goal is a session that is safe to reset or destroy because everything durabl
    - Task-scoped notes: append to the relevant backlog item's notes with `tasks-axi update <id> --append "<note>"`, or hand-edit `data/backlog.md` per the active backend (section 10).
    - Undone next steps: file each as a queued backlog item (section 10), with `blocked-by` recorded if it genuinely depends on something else.
 
-4. **Curate, don't just append.**
+4. **Run gated memory hygiene after routing and filing.**
+   This phase keeps the files that firstmate loads at every session start from accumulating months of tokens.
+   It is intentionally cheap on ordinary `/stow` runs: first check the gate below, and do the full prune/compress pass only when a trigger fires.
+
+   Scope is limited to the curated memory files in the active firstmate home:
+   - `data/captain.md`
+   - `data/learnings.md`
+   - `data/projects.md` registry descriptions
+
+   Explicitly out of scope:
+   - Task briefs and scout reports under `data/<id>/`: these are read on demand and do not add session-load cost.
+   - `data/backlog.md`: its Done section already self-prunes through the active backlog backend, and task notes follow AGENTS.md's note-hygiene rule.
+
+   Use three triggers:
+   - **Size budget exceeded:** count lines, because line count is the honest cheap proxy for session-load token cost.
+     Prune any over-budget file.
+     Budgets: `data/captain.md` 40 lines; `data/learnings.md` 60 lines; `data/projects.md` about 2 lines per registered project.
+     For `data/projects.md`, preserve the registry's parseable project lines; compress descriptions rather than changing the registry shape.
+   - **Staleness:** more than 7 days since the last hygiene pass.
+     Track the last pass in `data/.last-memory-hygiene` as an ISO date (`YYYY-MM-DD` is enough).
+     If the timestamp file is absent, treat it as stale once so the home gets a baseline pass.
+   - **Explicit request:** `/stow prune`, "prune memory", or an equivalent captain request forces the full pass.
+
+   When no trigger fires, do not read or rewrite the full memory set again.
+   Print one short status line such as `memory within budget, last pruned 2026-07-04` and skip the phase.
+   When a trigger fires, run the checklist below across the scoped files, then write today's ISO date to `data/.last-memory-hygiene` even if the pass found nothing to edit.
+
+   Prune checklist:
+   - Delete entries that are superseded, disproven, or expired; dated entries should make this judgment visible.
+   - Consolidate clusters: several entries about one topic should become one rewritten durable entry.
+   - Re-route misfiled knowledge to its most specific home per AGENTS.md's knowledge-routing table.
+     If a fact is project-intrinsic, do not hand-edit that project's `AGENTS.md`; flag or file normal crewmate work so it lands through the project delivery pipeline.
+   - Tighten prose without losing load-bearing facts, active constraints, or the "why" behind captain feedback.
+     When in doubt, consolidate rather than delete.
+   - Never prune away standing captain orders, safety tripwires, active access constraints, never-reenable rules, or anything the captain marked important.
+     These may be compressed, but the operative instruction must survive.
+
+5. **Curate, don't just append.**
    When a finding overlaps or supersedes something already on disk, prefer rewriting or pruning the existing entry over piling on a new one.
    Graduation moves are limited to exactly three: promote a learning to the shared `AGENTS.md` via PR, fold it into `data/captain.md`, or delete a stale entry.
    Do not invent other graduation paths.
 
-5. **Report to the captain.**
+6. **Report to the captain.**
    Summarize, in plain outcome language (section 9): what was stowed and where, what was filed to the backlog, and whether the session is now safe to reset or destroy - i.e. whether every durable finding from this sweep now lives on disk rather than only in this conversation.
+   Include the one-line memory-hygiene result: skipped within budget, pruned specific files, or unable to prune with the reason.
    If something could not be captured yet (for example, project-intrinsic knowledge waiting on a crewmate to land it), say so explicitly rather than reporting the session fully safe.
 
 ## Scope exclusion: no skill storage
