@@ -827,7 +827,10 @@ test_composer_state_ghost_placeholder_is_empty() {
   dir="$TMP_ROOT/composer-ghost"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '  ╭────────────────────────╮\n  │ ❯ Type a message...    │\n  ╰──────── Composer ─────╯\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+  # Force the byte-oriented locale that exposed the old multibyte prompt-glyph
+  # strip bug: `${var#?}` removed only one byte of `❯`, leaving garbage before
+  # the placeholder and making the idle regex miss.
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" LC_ALL=C LANG=C \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
   [ "$out" = empty ] || fail "the known ghost placeholder 'Type a message...' should read as empty, got '$out'"
   pass "fm_backend_herdr_composer_state: the ghost placeholder text reads empty, not pending"
