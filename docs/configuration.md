@@ -130,7 +130,7 @@ When `config/backlog-backend=manual`, bootstrap hand-edits and does not suggest 
 Bootstrap also reports a `TANGLE:` line when `FM_ROOT` is on a named non-default branch; follow the printed checkout remediation rather than treating it as an installable tool problem.
 In a read-only session that did not get the fleet lock, the same line is advisory and omits the checkout command.
 Bootstrap also scans the firstmate repo and every clone under `projects/` for GitHub push URLs that are not owned by the authenticated GitHub login.
-It reports them as `PUSH_TARGET:` lines with the exact safe-disable command: `git -C <repo-path> remote set-url --push <remote> no_push://disabled-not-our-repo`.
+It reports them as `PUSH_TARGET:` lines with the exact safe-disable command: `git -C <repo-path> config --replace-all remote.<remote>.pushurl no_push://disabled-not-our-repo`.
 Organization repositories pass only when GitHub cheaply verifies admin permission for the authenticated login; otherwise the diagnostic uses distinct org-unverified wording.
 When `gh api user` is offline or unauthenticated, the scan reports a skip rather than guessing.
 The locked session-start bootstrap step also runs a best-effort project clone refresh through `fm-fleet-sync.sh`.

@@ -9,7 +9,7 @@
 #                 "CREW_DISPATCH: active config/crew-dispatch.json" plus indented rules,
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "TASKS_AXI: available", "TANGLE: <remediation>",
-#                 "PUSH_TARGET: <repo>: <remote> pushes to ... - disable with: git -C ... remote set-url --push ... no_push://disabled-not-our-repo",
+#                 "PUSH_TARGET: <repo>: <remote> pushes to ... - disable with: git -C ... config --replace-all remote.<remote>.pushurl no_push://disabled-not-our-repo",
 #                 "PUSH_TARGET: skipped: <reason>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: <window-targets...>",
@@ -417,8 +417,10 @@ github_repo_from_url() {
 }
 
 push_target_repo_status() {
-  local owner=$1 repo=$2 login=$3 info owner_type admin
-  if [ "$owner" = "$login" ]; then
+  local owner=$1 repo=$2 login=$3 info owner_type admin owner_lc login_lc
+  owner_lc=$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')
+  login_lc=$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')
+  if [ "$owner_lc" = "$login_lc" ]; then
     printf '%s\n' owned
     return 0
   fi
@@ -438,8 +440,8 @@ push_target_repo_status() {
 
 push_target_disable_cmd() {
   local repo_path=$1 remote=$2
-  printf 'git -C %s remote set-url --push %s no_push://disabled-not-our-repo' \
-    "$(shell_quote "$repo_path")" "$(shell_quote "$remote")"
+  printf 'git -C %s config --replace-all %s no_push://disabled-not-our-repo' \
+    "$(shell_quote "$repo_path")" "$(shell_quote "remote.$remote.pushurl")"
 }
 
 push_target_collect_repo() {

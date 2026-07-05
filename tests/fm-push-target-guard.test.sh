@@ -89,6 +89,22 @@ test_owned_push_url_passes() {
   pass "push-target guard accepts captain-owned GitHub push URLs"
 }
 
+test_owned_push_url_case_insensitive_passes() {
+  local case_dir root home fakebin out
+  case_dir="$TMP_ROOT/owned-case"
+  root="$case_dir/root"
+  home="$case_dir/home"
+  make_repo "$root"
+  make_home "$home"
+  git -C "$root" remote add origin https://github.com/Captain/firstmate.git
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  out=$(bootstrap_out "$root" "$home" "$fakebin")
+
+  assert_not_contains "$out" "PUSH_TARGET:" "GitHub owner/login matching must be case-insensitive"
+  pass "push-target guard accepts captain-owned GitHub push URLs regardless of case"
+}
+
 test_non_owned_explicit_push_url_flags() {
   local case_dir root home project fakebin out expect
   case_dir="$TMP_ROOT/non-owned"
@@ -104,10 +120,37 @@ test_non_owned_explicit_push_url_flags() {
   fakebin=$(make_fake_toolchain "$case_dir")
 
   out=$(bootstrap_out "$root" "$home" "$fakebin" | grep '^PUSH_TARGET:' || true)
-  expect="PUSH_TARGET: alpha: upstream pushes to non-owned https://github.com/other/alpha.git - disable with: git -C '$project' remote set-url --push 'upstream' no_push://disabled-not-our-repo"
+  expect="PUSH_TARGET: alpha: upstream pushes to non-owned https://github.com/other/alpha.git - disable with: git -C '$project' config --replace-all 'remote.upstream.pushurl' no_push://disabled-not-our-repo"
 
   [ "$out" = "$expect" ] || fail "non-owned push URL diagnostic mismatch"$'\n'"expected: $expect"$'\n'"actual:   $out"
   pass "push-target guard flags explicit non-owned GitHub push URLs with remediation"
+}
+
+test_multiple_push_urls_remediation_replaces_full_set() {
+  local case_dir root home project fakebin out expect cmd urls
+  case_dir="$TMP_ROOT/multiple-pushurls"
+  root="$case_dir/root"
+  home="$case_dir/home"
+  project="$home/projects/theta"
+  make_repo "$root"
+  make_home "$home"
+  make_repo "$project"
+  git -C "$root" remote add origin https://github.com/captain/firstmate.git
+  git -C "$project" remote add upstream https://github.com/captain/theta.git
+  git -C "$project" remote set-url --push --add upstream https://github.com/other/theta.git
+  git -C "$project" remote set-url --push --add upstream https://github.com/captain/theta.git
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  out=$(bootstrap_out "$root" "$home" "$fakebin" | grep '^PUSH_TARGET:' || true)
+  expect="PUSH_TARGET: theta: upstream pushes to non-owned https://github.com/other/theta.git - disable with: git -C '$project' config --replace-all 'remote.upstream.pushurl' no_push://disabled-not-our-repo"
+  [ "$out" = "$expect" ] || fail "multiple push URL diagnostic mismatch"$'\n'"expected: $expect"$'\n'"actual:   $out"
+
+  cmd=${out#* - disable with: }
+  eval "$cmd"
+  urls=$(git -C "$project" remote get-url --push --all upstream)
+  [ "$urls" = "no_push://disabled-not-our-repo" ] \
+    || fail "safe-disable remediation should replace the full push-url set, got: $urls"
+  pass "push-target remediation replaces the full push-url set"
 }
 
 test_no_push_url_passes() {
@@ -191,7 +234,9 @@ test_gh_unavailable_skips_without_false_alarm() {
 }
 
 test_owned_push_url_passes
+test_owned_push_url_case_insensitive_passes
 test_non_owned_explicit_push_url_flags
+test_multiple_push_urls_remediation_replaces_full_set
 test_no_push_url_passes
 test_fetch_url_fallback_is_scanned
 test_org_without_verified_admin_flags_distinctly
